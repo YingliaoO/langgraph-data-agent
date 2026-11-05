@@ -1,0 +1,23 @@
+{
+  "name": "multisource-data-agent-web",
+  "version": "0.1.2",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "lint": "vue-tsc --noEmit",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.20.0",
+    "vue": "^3.5.42"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "sass": "^1.77.6",
+    "typescript": "^5.4.5",
+    "vite": "6.4.5",
+    "vue-tsc": "3.3.14"
+  }
+}

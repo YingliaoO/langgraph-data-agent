@@ -1,0 +1,223 @@
+# Local development/demo only. For production, apply the external override in docs/DEPLOYMENT.md.
+services:
+  # 后端服务
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
+    ports:
+      - "127.0.0.1:8000:8000"
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    environment:
+      # 基础配置
+      - DEBUG=${MULTISOURCE_AGENT_DEBUG:-False}
+      # 数据库配置
+      - DATABASE_URL=${DATABASE_URL}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-local_demo_root_only}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-retail_demo}
+      - MYSQL_USER=${MYSQL_USER:-retail_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-local_demo_only}
+
+      # Neo4j配置
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-local_demo_only}
+      - NEO4J_DEFAULT_GRAPH_QUERY=${NEO4J_DEFAULT_GRAPH_QUERY}
+
+      # LLM配置
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - LLM_MODEL=${LLM_MODEL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.7}
+
+      # Embedding配置
+      - EMBEDDING_PROVIDER=${EMBEDDING_PROVIDER:-openai}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL}
+      - EMBEDDING_DIMENSION=${EMBEDDING_DIMENSION}
+
+      # Rerank配置
+      - RERANK_ENABLED=${RERANK_ENABLED}
+      - RERANK_PROVIDER=${RERANK_PROVIDER}
+      - RERANK_BASE_URL=${RERANK_BASE_URL}
+      - RERANK_ENDPOINT=${RERANK_ENDPOINT}
+      - RERANK_API_KEY=${RERANK_API_KEY}
+      - RERANK_MODEL=${RERANK_MODEL}
+      - RERANK_TIMEOUT=${RERANK_TIMEOUT:-30}
+      - RERANK_MAX_CANDIDATES=${RERANK_MAX_CANDIDATES}
+      - RERANK_TOP_N=${RERANK_TOP_N}
+      - RERANK_SCORE_FUSION_ALPHA=${RERANK_SCORE_FUSION_ALPHA}
+
+      # 知识库配置
+      - KB_TOP_K=5
+      - KB_SIMILARITY_THRESHOLD=${KB_SIMILARITY_THRESHOLD:-0.2}
+      - KB_POSTGRES_SIMILARITY_THRESHOLD=${KB_POSTGRES_SIMILARITY_THRESHOLD:-0.5}
+      - KB_POSTGRES_RERANK_THRESHOLD=${KB_POSTGRES_RERANK_THRESHOLD:-0.75}
+      - KB_PGVECTOR_REQUEST_TIMEOUT=${KB_PGVECTOR_REQUEST_TIMEOUT:-45}
+      - KB_RERANK_SCORE_THRESHOLD=${KB_RERANK_SCORE_THRESHOLD:-0.8}
+      - KB_CHUNK_SIZE=512
+      - KB_CHUNK_OVERLAP=80
+      - KB_ENABLE_EXTERNAL_SEARCH=false
+
+      # 会话配置
+      - CONVERSATION_HISTORY_TTL=${CONVERSATION_HISTORY_TTL:-259200}
+      - CONVERSATION_HISTORY_MAX_MESSAGES=${CONVERSATION_HISTORY_MAX_MESSAGES:-200}
+
+      # 外部服务配置
+      - INGEST_SERVICE_URL=${BACKEND_INGEST_SERVICE_URL:-http://kb_ingest:8000}
+      - FILE_UPLOAD_MAX_MB=${FILE_UPLOAD_MAX_MB:-2}
+
+      # Agent配置
+      - MAX_ITERATIONS=${MAX_ITERATIONS:-10}
+      - AGENT_TIMEOUT=${AGENT_TIMEOUT:-300}
+      - ROUTER_TIMEOUT_SECONDS=${ROUTER_TIMEOUT_SECONDS:-60}
+      - CORE_TOOL_TIMEOUT_SECONDS=${CORE_TOOL_TIMEOUT_SECONDS:-100}
+
+      # CORS配置
+      - CORS_ORIGINS=${CORS_ORIGINS}
+
+      # Tiktoken缓存目录
+      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken_cache
+    volumes:
+      - ./multisource_data_agent:/app/multisource_data_agent
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./.env:/app/.env
+    depends_on:
+      - neo4j
+      - mysql
+      - kb_ingest
+    networks:
+      - multisource-agent-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    command: uvicorn multisource_data_agent.main:application --host 0.0.0.0 --port 8000 --reload
+
+  neo4j:
+    image: neo4j:5.18
+    ports:
+      - "127.0.0.1:17474:7474"
+      - "127.0.0.1:17687:7687"
+    environment:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      JAVA_TOOL_OPTIONS: "-Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
+      NEO4J_AUTH: none
+      NEO4J_dbms_security_auth__enabled: "false"
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_dbms_security_procedures_allowlist: "apoc.*"
+      NEO4J_PLUGINS: '["apoc"]'
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - multisource-agent-network
+
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "127.0.0.1:13306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-local_demo_root_only}
+      - MYSQL_DATABASE=${MYSQL_DATABASE:-retail_demo}
+      - MYSQL_USER=${MYSQL_USER:-retail_user}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-local_demo_only}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+    networks:
+      - multisource-agent-network
+
+  kb_postgres:
+    image: ankane/pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${KB_PGDATABASE:-vector_db}
+      POSTGRES_USER: ${KB_PGUSER:-postgres}
+      POSTGRES_PASSWORD: ${KB_PGPASSWORD:-postgres}
+    ports:
+      - "127.0.0.1:${KB_PG_PORT:-5433}:5432"
+    volumes:
+      - kb_pgdata:/var/lib/postgresql/data
+      - ./docker/pgvector/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - multisource-agent-network
+
+  kb_ingest:
+    build:
+      context: ./kb_ingest
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    working_dir: /app
+    depends_on:
+      - kb_postgres
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+    env_file:
+      - .env
+    environment:
+      # PostgreSQL配置
+      PGHOST: ${KB_PGHOST:-kb_postgres}
+      PGPORT: ${KB_PGPORT:-5432}
+      PGDATABASE: ${KB_PGDATABASE:-vector_db}
+      PGUSER: ${KB_PGUSER:-postgres}
+      PGPASSWORD: ${KB_PGPASSWORD:-postgres}
+      # LLM配置
+      LLM_PROVIDER: ${KB_LLM_PROVIDER:-openai}
+      LLM_MODEL: ${KB_LLM_MODEL}
+      LLM_API_KEY: ${KB_LLM_API_KEY}
+      LLM_BASE_URL: ${KB_LLM_BASE_URL}
+      LLM_TEMPERATURE: ${KB_LLM_TEMPERATURE:-0.3}
+      USE_LLM: ${KB_USE_LLM:-false}
+      # Embedding配置
+      EMBEDDING_PROVIDER: ${KB_EMBEDDING_PROVIDER:-openai}
+      EMBEDDING_MODEL: ${KB_EMBEDDING_MODEL}
+      EMBEDDING_API_KEY: ${KB_EMBEDDING_API_KEY}
+      EMBEDDING_BASE_URL: ${KB_EMBEDDING_BASE_URL}
+      EMBEDDING_DIMENSION: ${KB_EMBEDDING_DIMENSION:-1024}
+      # Rerank配置
+      RERANK_ENABLED: ${KB_RERANK_ENABLED:-true}
+      RERANK_PROVIDER: ${KB_RERANK_PROVIDER:-custom}
+      RERANK_BASE_URL: ${KB_RERANK_BASE_URL}
+      RERANK_ENDPOINT: ${KB_RERANK_ENDPOINT}
+      RERANK_API_KEY: ${KB_RERANK_API_KEY}
+      RERANK_MODEL: ${KB_RERANK_MODEL}
+      RERANK_TIMEOUT: ${KB_RERANK_TIMEOUT:-30}
+      RERANK_MAX_CANDIDATES: ${KB_RERANK_MAX_CANDIDATES:-20}
+      RERANK_TOP_N: ${KB_RERANK_TOP_N:-6}
+      RERANK_SCORE_FUSION_ALPHA: ${KB_RERANK_SCORE_FUSION_ALPHA:-0.5}
+      # 批处理配置
+      BATCH_SIZE: ${KB_BATCH_SIZE:-16}
+      RETRY_TIMES: ${KB_RETRY_TIMES:-3}
+      RETRY_DELAY: ${KB_RETRY_DELAY:-5}
+    ports:
+      - "127.0.0.1:${KB_INGEST_PORT:-8100}:8000"
+    volumes:
+      - ./kb_ingest/data:/app/data
+      - ./kb_ingest/entrypoint.sh:/app/entrypoint.sh:ro
+    entrypoint: ["/bin/bash", "/app/entrypoint.sh"]
+    command: ["python", "-m", "uvicorn", "kb_service.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - multisource-agent-network
+
+
+networks:
+  multisource-agent-network:
+    driver: bridge
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  mysql_data:
+  kb_pgdata:

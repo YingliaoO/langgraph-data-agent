@@ -1,0 +1,4 @@
+# Local development/test installation. Run from the repository root.
+# pyproject.toml is the single source of backend dependency declarations.
+# The kb_ingest service keeps its separate service requirements.
+-e .[dev,kb-ingest]
