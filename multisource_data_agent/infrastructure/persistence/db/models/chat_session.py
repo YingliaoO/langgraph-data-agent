@@ -1,7 +1,7 @@
 """
 Chat session models for persistent conversation storage.
 
-Lightweight user ID system - no authentication, just user identification.
+Chat sessions are isolated by authenticated subject.
 """
 
 from sqlalchemy import Boolean, Column, DateTime, String, func
@@ -14,10 +14,8 @@ class ChatSession(Base):
     """
     Chat session model for persistent conversation storage.
 
-    Uses lightweight user ID system:
-    - user_id is a string (device ID, UUID, etc.) provided by frontend
-    - No User table or authentication required
-    - Allows grouping sessions by user without login
+    user_id is the verified JWT subject. Legacy rows with no owner are not
+    exposed by authenticated APIs and must be migrated by an administrator.
     """
 
     __tablename__ = "chat_sessions"

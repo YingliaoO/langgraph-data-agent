@@ -1,7 +1,12 @@
 
 import logging
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from uuid import uuid4
+from kb_service.api.upload_security import RequestBodyLimit
+from starlette.exceptions import HTTPException as StarletteHTTPException
 import psycopg2
 
 from kb_service.api.routes import router as api_router
@@ -43,6 +48,27 @@ def create_app() -> FastAPI:
     # expose both legacy /api and the expected /api/v1/knowledge paths
     app.include_router(api_router, prefix="/api")
     app.include_router(api_router, prefix="/api/v1/knowledge")
+    app.add_middleware(RequestBodyLimit)
+
+    @app.exception_handler(Exception)
+    async def internal_error(request: Request, exc: Exception):
+        trace_id = str(uuid4())
+        logger.error("Knowledge service failure, trace_id=%s", trace_id, exc_info=exc)
+        return JSONResponse(status_code=500, content={"code": "internal_error", "category": "internal_error", "message": "The request could not be completed", "trace_id": trace_id})
+
+    @app.exception_handler(HTTPException)
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": {
+            "code": "request_failed", "category": "request_error",
+            "message": "The request could not be completed", "trace_id": str(uuid4()),
+        }})
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        return JSONResponse(status_code=422, content={"detail": {
+            "code": "invalid_request", "category": "validation", "message": "Request validation failed", "trace_id": str(uuid4()),
+        }})
 
     @app.get("/health", tags=["system"])
     def health_check():

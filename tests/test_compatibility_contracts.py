@@ -31,11 +31,11 @@ def _collect_route_methods(app) -> Set[Tuple[str, str]]:
     return methods
 
 
-def test_chat_api_exposes_legacy_alias_routes() -> None:
+def test_chat_api_exposes_legacy_alias_routes(api_bearer_headers) -> None:
     from fastapi.testclient import TestClient
     from multisource_data_agent.main import application
 
-    client = TestClient(application)
+    client = TestClient(application, headers=api_bearer_headers)
 
     cases = [
         ("POST", "/api/v1/chat/chat", {"json": {}}),

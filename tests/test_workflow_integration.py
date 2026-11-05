@@ -75,7 +75,7 @@ class ScriptedModel:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rag_fails", [False, True], ids=["two-tools-success", "one-tool-error-partial"])
-async def test_real_workflow_merges_parallel_results_into_http_execution(monkeypatch, rag_fails):
+async def test_real_workflow_merges_parallel_results_into_http_execution(monkeypatch, rag_fails, api_bearer_headers):
     model = ScriptedModel()
     monkeypatch.setattr(lg_builder, "ChatOpenAI", lambda **_kwargs: model)
     monkeypatch.setattr(lg_builder.settings, "LLM_API_KEY", "offline-integration-test")
@@ -138,7 +138,7 @@ async def test_real_workflow_merges_parallel_results_into_http_execution(monkeyp
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=application), base_url="http://testserver"
         ) as client:
-            response = await client.post("/api/v1/chat/", json={"message": QUESTION})
+            response = await client.post("/api/v1/chat/", json={"message": QUESTION}, headers=api_bearer_headers)
     finally:
         application.dependency_overrides.clear()
         application.dependency_overrides.update(previous_overrides)

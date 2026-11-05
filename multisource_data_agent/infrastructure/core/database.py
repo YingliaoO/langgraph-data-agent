@@ -5,7 +5,7 @@ Database configuration helpers and session utilities.
 from contextlib import contextmanager
 from typing import Dict, Generator, Iterator
 
-from sqlalchemy import create_engine
+from sqlalchemy import LargeBinary, and_, cast, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 from multisource_data_agent.config import settings
@@ -13,11 +13,11 @@ from multisource_data_agent.config import settings
 _DEFAULT_LOG_ECHO = bool(settings.DEBUG)
 
 _connect_args: Dict[str, bool] = {}
-if settings.DATABASE_URL.startswith("sqlite"):
+if settings.APP_DATABASE_URL.startswith("sqlite"):
     _connect_args = {"check_same_thread": False}
 
 engine = create_engine(
-    settings.DATABASE_URL,
+    settings.APP_DATABASE_URL,
     echo=_DEFAULT_LOG_ECHO,
     future=True,
     pool_pre_ping=True,
@@ -33,6 +33,15 @@ SessionLocal = sessionmaker(
 )
 
 Base = declarative_base()
+
+
+def owner_filter(column, owner_id: str):
+    """JWT subjects are opaque/case-sensitive, including on MySQL's usual CI collations.
+
+    Keep the indexed normal equality and add byte equality so case/trailing-space
+    variants cannot inherit another subject's sessions or uploads.
+    """
+    return and_(column == owner_id, cast(column, LargeBinary) == owner_id.encode("utf-8"))
 
 
 def init_db(*, create_all: bool = False) -> None:

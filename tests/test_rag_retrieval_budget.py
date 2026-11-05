@@ -129,7 +129,8 @@ def test_search_api_legacy_and_explicit_budgets_remain_compatible(searcher, monk
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/v1/knowledge")
     app.dependency_overrides[get_config] = lambda: instance.config
-    with TestClient(app) as client:
+    monkeypatch.setenv("KNOWLEDGE_SERVICE_TOKEN", "fixture-service-token-not-for-deployment-123456789")
+    with TestClient(app, headers={"X-Knowledge-Service-Key": "fixture-service-token-not-for-deployment-123456789"}) as client:
         response = client.post("/api/v1/knowledge/search", json={"query": "policy", "top_k": 2})
         assert response.status_code == 200 and response.json()["count"] == 2
         assert response.json()["retrieval"]["candidate_k"] == 20

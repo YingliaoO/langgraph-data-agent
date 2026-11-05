@@ -12,6 +12,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
 from multisource_data_agent.config import settings
+from multisource_data_agent.infrastructure.core.business_database import (
+    business_database_url, business_scope, assert_readonly_account,
+)
 from multisource_data_agent.infrastructure.core.logger import get_logger
 from ..domain_knowledge import (
     COLUMN_DESCRIPTIONS,
@@ -146,11 +149,13 @@ async def _retrieve_schema_from_mysql(
 
     def _sync_retrieve():
         engine: Engine = create_engine(
-            connection_string or settings.DATABASE_URL,
+            business_database_url(connection_string),
             future=True,
         )
         try:
             with engine.connect() as conn:
+                assert_readonly_account(conn)
+                _, allowed_tables = business_scope()
                 # 获取所有表信息
                 tables_query = text("""
                     SELECT
@@ -167,6 +172,8 @@ async def _retrieve_schema_from_mysql(
 
                 for table_row in table_rows:
                     table_name = table_row[0]
+                    if table_name.lower() not in allowed_tables:
+                        continue
                     table_comment = table_row[1] or ""
                     table_key = table_name.lower()
 
@@ -231,6 +238,8 @@ async def _retrieve_schema_from_mysql(
                 seen_keys: Set[Tuple[str, str, str, str]] = set()
 
                 for fk_row in fk_rows:
+                    if fk_row[0].lower() not in allowed_tables or fk_row[2].lower() not in allowed_tables:
+                        continue
                     key = (fk_row[0], fk_row[1], fk_row[2], fk_row[3])
                     if key in seen_keys:
                         continue

@@ -11,11 +11,16 @@ from multisource_data_agent.application.agents.text2sql.components.sql_execution
     "postgresql://demo:fake-secret-123@localhost/retail?application_name=private",
 ])
 def test_connection_fallback_does_not_log_credentials(monkeypatch, url):
-    monkeypatch.setattr(node.settings, "DATABASE_URL", url)
+    monkeypatch.setattr(node.settings, "BUSINESS_DATABASE_URL", url)
+    monkeypatch.setattr(node.settings, "BUSINESS_ALLOWED_SCHEMAS", "retail")
     messages = []
     sink = logger.add(messages.append, level="DEBUG", format="{message}")
     try:
-        assert node._get_connection_string(None) == url
+        if url.startswith("mysql"):
+            assert node._get_connection_string(None) == url
+        else:
+            with pytest.raises(ValueError):
+                node._get_connection_string(None)
     finally:
         logger.remove(sink)
     output = "\n".join(str(message) for message in messages)

@@ -36,7 +36,7 @@ def _tool_result(kind: str, status: str = "success") -> ToolResult:
 
 
 @pytest.fixture
-def mocked_chat(monkeypatch):
+def mocked_chat(monkeypatch, api_bearer_headers):
     application.dependency_overrides[chat_module.get_db] = lambda: object()
     monkeypatch.setattr(chat_module, "get_or_create_session", lambda _db, _sid, _uid: "contract-session")
 
@@ -44,11 +44,11 @@ def mocked_chat(monkeypatch):
         return "contract-message"
 
     monkeypatch.setattr(chat_module, "save_message", save_message)
-    yield
+    yield api_bearer_headers
     application.dependency_overrides.pop(chat_module.get_db, None)
 
 
-async def _post_contract(monkeypatch, result: ToolResult, route: str = "data-query"):
+async def _post_contract(monkeypatch, result: ToolResult, route: str = "data-query", headers=None):
     execution = build_execution_dto(tool_results=[result], route=route).model_dump(mode="json")
 
     async def fake_process(*_args, **_kwargs):
@@ -64,7 +64,7 @@ async def _post_contract(monkeypatch, result: ToolResult, route: str = "data-que
     monkeypatch.setattr(chat_module, "process_agent_query", fake_process)
     transport = httpx.ASGITransport(app=application)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        return await client.post("/api/v1/chat/", json={"message": "enterprise test"})
+        return await client.post("/api/v1/chat/", json={"message": "enterprise test"}, headers=headers)
 
 
 @pytest.mark.asyncio
@@ -73,7 +73,7 @@ async def _post_contract(monkeypatch, result: ToolResult, route: str = "data-que
     [("sql", "sql_agent", "sql"), ("graph", "graph_tool", "cypher"), ("rag", "knowledge_rag", None)],
 )
 async def test_enterprise_http_execution_contract(mocked_chat, monkeypatch, kind, expected_tool, statement_language):
-    response = await _post_contract(monkeypatch, _tool_result(kind))
+    response = await _post_contract(monkeypatch, _tool_result(kind), headers=mocked_chat)
     assert response.status_code == 200
     body = response.json()
     assert body["route"] == "data-query"
@@ -89,7 +89,7 @@ async def test_enterprise_http_execution_contract(mocked_chat, monkeypatch, kind
 
 @pytest.mark.asyncio
 async def test_enterprise_http_policy_rejection_is_error_without_evidence(mocked_chat, monkeypatch):
-    response = await _post_contract(monkeypatch, _tool_result("sql", status="error"))
+    response = await _post_contract(monkeypatch, _tool_result("sql", status="error"), headers=mocked_chat)
     body = response.json()
     assert response.status_code == 200
     assert body["execution"]["status"] == "error"

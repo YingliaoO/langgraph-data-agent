@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import importlib.metadata
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -290,7 +291,7 @@ def call_chat_api(
     ingest_incremental: Optional[bool] = None,
 ) -> Tuple[Optional[Dict[str, Any]], float, Optional[str], Optional[int]]:
     url = base_url.rstrip("/") + "/api/v1/chat/"
-    payload = {"message": query, "user_id": user_id, "stream": False, "trace_id": trace_id}
+    payload = {"message": query, "stream": False, "trace_id": trace_id}
     if file_path:
         payload["file_path"] = file_path
     if isinstance(ingest_incremental, bool):
@@ -299,7 +300,7 @@ def call_chat_api(
     request = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={"Content-Type": "application/json; charset=utf-8", "Authorization": "Bearer " + os.getenv("MULTISOURCE_AGENT_ACCESS_TOKEN", "")},
         method="POST",
     )
     started_at = time.perf_counter()

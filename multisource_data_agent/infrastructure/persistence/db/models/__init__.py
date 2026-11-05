@@ -12,6 +12,7 @@ from .chat_session import ChatSession
 from .conversation import Conversation, DialogueType
 from .message import Message
 from .user import User
+from .uploaded_file import UploadedFile
 
 __all__ = [
     "ConversationHistorySnapshot",
@@ -22,4 +23,5 @@ __all__ = [
     "DialogueType",
     "Message",
     "User",
+    "UploadedFile",
 ]

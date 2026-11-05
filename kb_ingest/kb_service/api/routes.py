@@ -4,6 +4,8 @@ import tempfile
 import shutil
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
+import os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status, UploadFile, File, Form
 from openai import APIConnectionError, AuthenticationError, OpenAIError, RateLimitError
@@ -22,7 +24,9 @@ from kb_service.services.mysql_ingest import MySQLIngestor
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+from kb_service.api.upload_security import require_service_key, receive_dataset
+
+router = APIRouter(dependencies=[Depends(require_service_key)])
 
 
 DATASET_UPLOAD_SUFFIXES = {".csv", ".xlsx", ".xls"}
@@ -43,7 +47,9 @@ async def upload_and_ingest_dataset(
 ):
     """Canonical tabular dataset ingestion endpoint used by the Data Agent."""
 
-    filename = Path(file.filename or "dataset").name
+    filename = file.filename or "dataset"
+    if Path(filename).name != filename or "\\" in filename or len(filename) > 255:
+        raise HTTPException(400, "Invalid filename")
     suffix = Path(filename).suffix.lower()
     if suffix not in DATASET_UPLOAD_SUFFIXES:
         raise HTTPException(
@@ -52,12 +58,10 @@ async def upload_and_ingest_dataset(
         )
 
     temp_dir = tempfile.mkdtemp()
-    temp_file_path = Path(temp_dir) / filename
+    temp_file_path = Path(temp_dir) / (uuid4().hex + suffix)
 
     try:
-        content = await file.read()
-        with open(temp_file_path, "wb") as buffer:
-            buffer.write(content)
+        content = await receive_dataset(file, temp_file_path)
 
         size_bytes = temp_file_path.stat().st_size
         effective_dataset_id = dataset_id or stable_upload_dataset_id(content, filename=filename)
@@ -100,7 +104,7 @@ async def upload_and_ingest_dataset(
     except Exception as exc:
         shutil.rmtree(temp_dir, ignore_errors=True)
         logger.exception("Dataset upload failed")
-        raise HTTPException(status_code=500, detail=f"数据集上传失败: {str(exc)}")
+        raise HTTPException(status_code=500, detail="Dataset upload failed") from None
 
 
 @router.post(
@@ -109,9 +113,15 @@ async def upload_and_ingest_dataset(
     summary="Process an Excel file and push embeddings into pgvector",
 )
 def ingest_excel(payload: ExcelIngestRequest, background: BackgroundTasks, config: Config = Depends(get_config)):
-    excel_path = Path(payload.excel_path)
+    # Legacy pre-staged ingestion accepts a filename within an administrator-controlled root only.
+    root = Path(os.getenv("INGEST_UPLOAD_DIR", "/app/data")).resolve()
+    if Path(payload.excel_path).name != payload.excel_path or "\\" in payload.excel_path:
+        raise HTTPException(400, "Use a staged filename, not a server path")
+    excel_path = (root / payload.excel_path).resolve()
+    if not excel_path.is_relative_to(root) or excel_path.suffix.lower() not in {".xlsx", ".xls"}:
+        raise HTTPException(400, "Invalid staged dataset")
     if not excel_path.exists():
-        raise HTTPException(status_code=404, detail=f"Excel file not found: {excel_path}")
+        raise HTTPException(status_code=404, detail="Staged dataset not found")
 
     def run_ingest() -> None:
         try:
@@ -127,7 +137,7 @@ def ingest_excel(payload: ExcelIngestRequest, background: BackgroundTasks, confi
     logger.info("Excel ingest queued for %s (模式: %s)", excel_path, mode)
     return {
         "message": "ingest started",
-        "path": str(excel_path),
+        "path": excel_path.name,
         "mode": "incremental" if payload.incremental else "full"
     }
 
@@ -150,7 +160,10 @@ async def upload_and_ingest_excel(
     - 处理完成后自动清理临时文件
     """
     # 验证文件类型
-    if not file.filename.endswith(('.xlsx', '.xls')):
+    filename = file.filename or ""
+    if Path(filename).name != filename or "\\" in filename or len(filename) > 255:
+        raise HTTPException(400, "Invalid filename")
+    if not filename.lower().endswith(('.xlsx', '.xls')):
         raise HTTPException(
             status_code=400,
             detail="只支持 Excel 文件 (.xlsx, .xls)"
@@ -158,12 +171,11 @@ async def upload_and_ingest_excel(
 
     # 创建临时文件
     temp_dir = tempfile.mkdtemp()
-    temp_file_path = Path(temp_dir) / file.filename
+    temp_file_path = Path(temp_dir) / (uuid4().hex + Path(filename).suffix.lower())
 
     try:
         # 保存上传的文件
-        with open(temp_file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        await receive_dataset(file, temp_file_path)
 
         logger.info("文件已上传到临时目录: %s", temp_file_path)
 
@@ -196,11 +208,14 @@ async def upload_and_ingest_excel(
             "size_bytes": temp_file_path.stat().st_size
         }
 
+    except HTTPException:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise
     except Exception as e:
         # 如果出错，清理临时文件
         shutil.rmtree(temp_dir, ignore_errors=True)
         logger.exception("文件上传失败")
-        raise HTTPException(status_code=500, detail=f"文件上传失败: {str(e)}")
+        raise HTTPException(status_code=500, detail="Dataset upload failed") from None
 
 
 @router.post(

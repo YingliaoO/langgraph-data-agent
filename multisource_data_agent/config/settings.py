@@ -4,7 +4,7 @@ Centralised application settings for Multi-Source Data Agent.
 
 from typing import List, Optional, Tuple
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -163,7 +163,25 @@ class Settings(BaseSettings):
 
     # Relational database
     # Keep the historical local SQLite filename so an existing data/ volume remains readable.
-    DATABASE_URL: str = "sqlite:///./data/gustobot.db"
+    APP_DATABASE_URL: str = Field(
+        default="sqlite:///./data/gustobot.db",
+        validation_alias=AliasChoices("APP_DATABASE_URL", "DATABASE_URL"),
+    )
+    BUSINESS_DATABASE_URL: Optional[str] = None
+    BUSINESS_ALLOWED_SCHEMAS: str = "retail_demo"
+    BUSINESS_ALLOWED_TABLES: str = (
+        "retail_customers,retail_products,retail_orders,retail_order_items,retail_refunds"
+    )
+    AUTH_JWT_SECRET: Optional[str] = None
+    AUTH_JWT_ISSUER: str = "multisource-data-agent"
+    AUTH_JWT_AUDIENCE: str = "multisource-data-agent-api"
+    KNOWLEDGE_SERVICE_TOKEN: Optional[str] = None
+    UPLOAD_DIR: str = "uploads"
+
+    @property
+    def DATABASE_URL(self) -> str:
+        """Deprecated application-only alias; never used by Text2SQL."""
+        return self.APP_DATABASE_URL
     SQL_AGENT_MAX_ROWS: int = Field(
         default=200,
         description="Maximum rows returned by SQL Agent queries",
@@ -334,7 +352,7 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: str = Field(
-        default="http://localhost:3000,http://localhost:5173",
+        default="",
         description="Comma-separated list of CORS origins"
     )
 
@@ -352,8 +370,23 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> List[str]:
         """Parse CORS_ORIGINS string to list"""
         if isinstance(self.CORS_ORIGINS, str):
-            return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+            return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
         return list(self.CORS_ORIGINS)
+
+    @field_validator("CORS_ORIGINS")
+    @classmethod
+    def validate_cors_origins(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+        for origin in value.split(","):
+            origin = origin.strip()
+            if not origin:
+                continue
+            parsed = urlsplit(origin)
+            if origin == "*" or parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("CORS origins must be explicit HTTP(S) origins")
+            if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:
+                raise ValueError("CORS origins must not contain credentials, paths or queries")
+        return value
 
     model_config = {
         "env_file": ".env",

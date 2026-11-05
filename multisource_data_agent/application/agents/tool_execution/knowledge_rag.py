@@ -99,7 +99,9 @@ class PgVectorStrategy:
 
         timeout_cfg = aiohttp.ClientTimeout(total=self.timeout)
         async with aiohttp.ClientSession(timeout=timeout_cfg) as session:
-            async with session.post(self.search_url, json=payload) as response:
+            async with session.post(self.search_url, json=payload, headers={
+                "X-Knowledge-Service-Key": settings.KNOWLEDGE_SERVICE_TOKEN or ""
+            }) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     raise RuntimeError(f"pgvector HTTP {response.status}: {error_text[:500]}")

@@ -1,114 +1,76 @@
-"""
-文件上传处理API
-"""
-import uuid
-import aiofiles
+"""Authenticated, bounded dataset upload API."""
 from pathlib import Path
+from uuid import uuid4
 
-from fastapi import APIRouter, UploadFile, File, HTTPException, status
-from fastapi.responses import JSONResponse
-from loguru import logger
+import aiofiles
+from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
+from sqlalchemy.orm import Session
 
 from multisource_data_agent.config import settings
+from multisource_data_agent.infrastructure.core.database import get_db
+from multisource_data_agent.infrastructure.core.uploads import (
+    CHUNK_BYTES, controlled_path, resolve_upload, validate_dataset_bytes,
+)
+from multisource_data_agent.infrastructure.persistence.db.models.uploaded_file import UploadedFile
+from multisource_data_agent.interfaces.http.security import require_user, safe_error
 
 router = APIRouter()
-
-# 创建上传目录
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
-
-# Data Agent 展示版只接收结构化数据集；通用文档问答已退出核心产品。
 ALLOWED_FILE_TYPES = {'.csv', '.xlsx', '.xls'}
-
-# 数据集上传大小与 Agent ingestion 限制保持一致。
-MAX_FILE_SIZE = settings.FILE_UPLOAD_MAX_MB * 1024 * 1024
 
 
 @router.post("/file")
-async def upload_file(file: UploadFile = File(...)) -> JSONResponse:
-    """上传 CSV/Excel 数据集，供后续 ingestion 流程处理。"""
-
-    # 检查文件类型
-    file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in ALLOWED_FILE_TYPES:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"不支持的文件类型。支持的类型: {', '.join(ALLOWED_FILE_TYPES)}"
-        )
-
+async def upload_file(file: UploadFile = File(...), db: Session = Depends(get_db), subject: str = Depends(require_user)):
+    supplied_name = file.filename or ""
+    if not supplied_name or Path(supplied_name).name != supplied_name or "\\" in supplied_name or len(supplied_name) > 255:
+        raise safe_error(400, "invalid_filename", "Invalid filename")
+    suffix = Path(supplied_name).suffix.lower()
+    if suffix not in ALLOWED_FILE_TYPES:
+        raise safe_error(400, "unsupported_file_type", "Only CSV, XLSX and XLS are accepted")
+    file_id = str(uuid4())
+    storage_name = file_id + suffix
+    path = controlled_path(storage_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    size = 0
+    limit = settings.FILE_UPLOAD_MAX_MB * 1024 * 1024
     try:
-        # 生成唯一文件名
-        file_id = str(uuid.uuid4())
-        filename = f"{file_id}_{file.filename}"
-        file_path = UPLOAD_DIR / filename
-
-        # 保存文件
-        content = await file.read()
-        file_size = len(content)
-
-        if file_size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail=f"文件太大，最大支持 {MAX_FILE_SIZE // (1024*1024)}MB"
-            )
-
-        async with aiofiles.open(file_path, 'wb') as f:
-            await f.write(content)
-
-        logger.info(f"文件上传成功: {filename} ({file_size} bytes)")
-
-        return JSONResponse({
-            "success": True,
-            "file_id": file_id,
-            "filename": filename,
-            "original_name": file.filename,
-            "size": file_size,
-            "file_path": str(file_path),
-            "file_url": f"/api/v1/upload/files/{filename}",
-            "file_type": file_ext
-        })
-
-    except HTTPException:
+        async with aiofiles.open(path, "xb") as destination:
+            while chunk := await file.read(CHUNK_BYTES):
+                size += len(chunk)
+                if size > limit:
+                    raise safe_error(413, "upload_too_large", "The upload exceeds the configured size limit")
+                await destination.write(chunk)
+        validate_dataset_bytes(path.read_bytes(), suffix)
+        record = UploadedFile(id=file_id, user_id=subject, storage_name=storage_name, original_name=supplied_name, size_bytes=size)
+        db.add(record)
+        db.commit()
+    except BaseException:
+        db.rollback()
+        path.unlink(missing_ok=True)
         raise
-    except Exception as e:
-        logger.error(f"文件上传失败: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"文件上传失败: {str(e)}"
-        )
+    finally:
+        await file.close()
+    return JSONResponse({
+        "success": True, "file_id": file_id, "filename": storage_name,
+        "original_name": supplied_name, "size": size, "file_type": suffix,
+        "file_path": storage_name,  # Deprecated display field, never accepted as a server path.
+        "file_url": f"/api/v1/upload/files/{storage_name}",
+    })
 
 
 @router.get("/files/{filename}")
-async def get_uploaded_file(filename: str):
-    """获取上传的文件"""
-    file_path = UPLOAD_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="文件不存在"
-        )
-
-    from fastapi.responses import FileResponse
-    return FileResponse(file_path)
+async def get_uploaded_file(filename: str, db: Session = Depends(get_db), subject: str = Depends(require_user)):
+    path = controlled_path(filename)
+    record = resolve_upload(db, path.stem, subject)
+    if record.storage_name != filename:
+        raise safe_error(404, "file_not_found", "Uploaded file not found")
+    return FileResponse(path, filename=record.original_name)
 
 
 @router.delete("/{file_id}")
-async def delete_uploaded_file(file_id: str):
-    """删除上传的文件"""
-    # 查找文件
-    for file_path in UPLOAD_DIR.rglob(f"{file_id}_*"):
-        try:
-            file_path.unlink()
-            logger.info(f"文件删除成功: {file_path}")
-            return JSONResponse({
-                "success": True,
-                "message": "文件删除成功"
-            })
-        except Exception as e:
-            logger.error(f"文件删除失败: {e}")
-            break
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail="文件不存在"
-    )
+async def delete_uploaded_file(file_id: str, db: Session = Depends(get_db), subject: str = Depends(require_user)):
+    record = resolve_upload(db, file_id, subject)
+    controlled_path(record.storage_name).unlink()
+    db.delete(record)
+    db.commit()
+    return {"success": True, "message": "File deleted"}

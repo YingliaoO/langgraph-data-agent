@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import mimetypes
 import subprocess
 import sys
@@ -181,7 +182,7 @@ def multipart_upload(url: str, path: Path, timeout: int = 120) -> dict:
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Authorization": "Bearer " + os.getenv("MULTISOURCE_AGENT_ACCESS_TOKEN", ""), "Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -193,7 +194,7 @@ def post_json(url: str, payload: dict, timeout: int = 360) -> dict:
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={"Authorization": "Bearer " + os.getenv("MULTISOURCE_AGENT_ACCESS_TOKEN", ""), "Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -205,16 +206,15 @@ def ingest_knowledge(wait_seconds: int = 25) -> None:
         f"{BASE_URL}/api/v1/upload/file",
         HERE / "knowledge_base.csv",
     )
-    if not upload.get("success") or not upload.get("file_path"):
+    if not upload.get("success") or not upload.get("file_id"):
         raise RuntimeError(f"Knowledge upload failed: {upload}")
 
     response = post_json(
         f"{BASE_URL}/api/v1/chat/",
         {
             "message": "Import this CSV dataset",
-            "session_id": "enterprise-retail-bootstrap",
             "stream": False,
-            "file_path": upload["file_path"],
+            "file_id": upload["file_id"],
             "ingest_incremental": True,
         },
     )

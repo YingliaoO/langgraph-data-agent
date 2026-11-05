@@ -13,6 +13,9 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import DBAPIError
 
 from multisource_data_agent.config import settings
+from multisource_data_agent.infrastructure.core.business_database import (
+    business_database_url, assert_business_query, assert_readonly_account,
+)
 from multisource_data_agent.infrastructure.core.logger import get_logger
 
 logger = get_logger(service="text2sql.sql_execution")
@@ -198,7 +201,7 @@ def _map_db_type_to_driver(db_type: str) -> str:
 def _get_connection_string(connection_id: Optional[int]) -> Optional[str]:
     """Return the configured business database used by the SQL Agent."""
     logger.debug("使用已配置的业务数据库连接")
-    return settings.DATABASE_URL
+    return business_database_url()
 
 
 def _dialect_name(db_type: str) -> str:
@@ -290,9 +293,13 @@ def _run_query_sync(
     max_rows: int,
     timeout_ms: int = 5000,
 ) -> Tuple[List[Dict[str, Any]], bool]:
+    connection_string = business_database_url(connection_string)
+    assert_business_query(sql)
     engine: Engine = create_engine(connection_string, future=True)
     try:
         with engine.connect() as connection:
+            assert_readonly_account(connection)
+            connection.exec_driver_sql("SET SESSION TRANSACTION READ ONLY")
             timeout_supported = _configure_statement_timeout(connection, timeout_ms)
             result = connection.execution_options(stream_results=True).execute(text(sql))
             columns = list(result.keys())

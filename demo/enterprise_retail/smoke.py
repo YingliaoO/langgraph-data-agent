@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import mimetypes
 import sys
 import time
@@ -19,7 +20,7 @@ def request_json(url: str, payload: dict[str, Any], timeout: int = 360) -> dict[
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers={"Authorization": "Bearer " + os.getenv("MULTISOURCE_AGENT_ACCESS_TOKEN", ""), "Content-Type": "application/json; charset=utf-8"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -43,7 +44,7 @@ def multipart_upload(url: str, path: Path, timeout: int = 120) -> dict[str, Any]
     req = urllib.request.Request(
         url,
         data=data,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Authorization": "Bearer " + os.getenv("MULTISOURCE_AGENT_ACCESS_TOKEN", ""), "Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -85,7 +86,6 @@ def run_case(
             f"{BASE_URL}/api/v1/chat/",
             {
                 "message": case["question"],
-                "session_id": session_id,
                 "stream": False,
             },
         )
@@ -147,16 +147,15 @@ def run_file_ingestion_case() -> tuple[bool, dict[str, Any]]:
         f"{BASE_URL}/api/v1/upload/file",
         HERE / "weekly_campaign.csv",
     )
-    if not upload.get("success") or not upload.get("file_path"):
+    if not upload.get("success") or not upload.get("file_id"):
         return False, {"upload": upload, "checks": {"upload": False}}
 
     response = request_json(
         f"{BASE_URL}/api/v1/chat/",
         {
             "message": "导入这个 CSV 数据集",
-            "session_id": f"enterprise-file-{uuid.uuid4().hex[:8]}",
             "stream": False,
-            "file_path": upload["file_path"],
+            "file_id": upload["file_id"],
             "ingest_incremental": True,
         },
     )

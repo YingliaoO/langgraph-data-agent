@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 import statistics
 import time
 import urllib.error
@@ -37,7 +38,7 @@ def _search(base_url: str, payload: dict[str, Any], timeout: float) -> dict[str,
     request = urllib.request.Request(
         base_url.rstrip("/") + "/api/v1/knowledge/search",
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"}, method="POST",
+        headers={"Content-Type": "application/json; charset=utf-8", "X-Knowledge-Service-Key": os.getenv("KNOWLEDGE_SERVICE_TOKEN", "")}, method="POST",
     )
     started = time.perf_counter()
     try:

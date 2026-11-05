@@ -8,6 +8,7 @@ import multisource_data_agent.main as main
 @pytest.mark.asyncio
 async def test_readiness_snapshot_requires_core_dependencies_and_llm_config(monkeypatch) -> None:
     monkeypatch.setattr(main.settings, "LLM_API_KEY", "test-key")
+    monkeypatch.setattr(main.settings, "AUTH_JWT_SECRET", "fixture-not-a-secret-12345678901234567890")
     monkeypatch.setattr(
         main,
         "_readiness_targets",
@@ -31,6 +32,7 @@ async def test_readiness_snapshot_requires_core_dependencies_and_llm_config(monk
         "neo4j": "ok",
         "knowledge_service": "ok",
         "llm_config": "ok",
+        "auth_config": "ok",
     }
 
 

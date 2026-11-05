@@ -12,7 +12,7 @@ from multisource_data_agent.main import application
     "Error code: 400 - {'error': {'code': 'InvalidParameter', 'message': 'fixture failure'}}",
     'Provider response: {"error": {"code": "ServiceUnavailable"}}',
 ])
-async def test_provider_json_error_returns_execution_error_instead_of_http_500(monkeypatch, error_text):
+async def test_provider_json_error_returns_execution_error_instead_of_http_500(monkeypatch, error_text, api_bearer_headers):
     calls = []
 
     class FailingGraph:
@@ -33,7 +33,7 @@ async def test_provider_json_error_returns_execution_error_instead_of_http_500(m
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=application), base_url="http://testserver"
         ) as client:
-            response = await client.post("/api/v1/chat/", json={"message": "查询当前订单数"})
+            response = await client.post("/api/v1/chat/", json={"message": "查询当前订单数"}, headers=api_bearer_headers)
     finally:
         application.dependency_overrides.clear()
         application.dependency_overrides.update(previous)
@@ -45,4 +45,8 @@ async def test_provider_json_error_returns_execution_error_instead_of_http_500(m
     assert body["execution"]["contract_version"] == "1"
     assert body["execution"]["status"] == "error"
     assert body["execution"]["evidence"] == []
-    assert body["metadata"]["error"] == error_text
+    assert body["metadata"]["error"] == "internal_error"
+    assert body["metadata"]["error_code"] == "agent_execution_failed"
+    assert body["metadata"]["error_category"] == "execution"
+    assert error_text not in response.text
+    assert body["metadata"]["trace_id"]

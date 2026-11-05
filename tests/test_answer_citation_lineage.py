@@ -85,7 +85,10 @@ def test_rag_infrastructure_error_is_not_hidden_as_insufficient_evidence():
         metadata={"error": "retrieval service unavailable"},
     )])
     answer, citations = asyncio.run(generate_answer_with_citations(context, object()))
-    assert "retrieval service unavailable" in answer
+    # Infrastructure failures stay explicit, but raw tool/driver messages are not public text.
+    assert "Tool execution failed" in answer
+    assert context.metadata["tools"][0]["status"] == "error"
+    assert "retrieval service unavailable" not in answer
     assert "未检索到足够的证据" not in answer and citations == []
 
 

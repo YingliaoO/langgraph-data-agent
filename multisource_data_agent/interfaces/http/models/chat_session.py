@@ -1,7 +1,7 @@
 """
 Pydantic schemas for ChatSession model.
 
-Lightweight user ID system - no authentication required.
+Session ownership uses the authenticated JWT subject.
 """
 from datetime import datetime
 from typing import Optional

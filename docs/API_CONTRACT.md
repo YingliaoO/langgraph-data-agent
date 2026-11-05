@@ -365,3 +365,14 @@ file upload
 ```
 
 当前没有把 file-query success 伪造成 `knowledge_rag` tool execution。上传成功只说明任务已提交，不保证后台完成或立即可检索。
+
+
+## 身份、上传与事件流（安全发布）
+
+所有 Chat / Session / History / Upload 请求使用 `Authorization: Bearer <short-lived JWT>`。API 验证签名及 issuer/audience/exp/iat/sub；用户身份取 sub。请求里的 user_id 仅作兼容检查，若与身份不同返回 403。访问他人的 Session/History/Upload 返回 404；Session owner 不可修改。首次 Chat 不传 session_id，使用响应中的服务器 ID 继续会话。健康检查不要求用户 token。
+
+上传仍是 `POST /api/v1/upload/file`，返回 file_id；随后 Chat 发送 `{"message":"导入数据集","file_id":"<upload ID>"}`。不接受客户端 server file_path。CSV/XLSX/XLS 的文件和 multipart 请求体均有限额；路径/文件归属在每次访问时检查。
+
+HTTP 错误仅返回安全 `code/category/message/trace_id`（通常位于 detail），校验错误不回显输入。Agent 错误仍保留原有 HTTP execution 契约，但公开诊断不包含内部异常字符串。完整异常只记录服务端。
+
+`POST /api/v1/chat/stream` 是 SSE **进度及最终结果事件**：`progress` 后返回一个 `final` 或 `error`，正常连接以 `done` 结束；每条包含同名 event 和 JSON data.type。final.content 是完整答案，metadata 保留 route/sources/execution/trace_id。不按单词拆分，不宣称 Token Streaming。最终 Assistant 消息先持久化再发送 final。断开连接时传播取消；断开的连接无法保证收到 done，不产生假成功。

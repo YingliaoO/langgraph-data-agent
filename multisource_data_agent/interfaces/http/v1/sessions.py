@@ -1,7 +1,7 @@
 """
 Chat session management API endpoints.
 
-Lightweight user ID system - group sessions by user_id without authentication.
+Every operation is scoped to the authenticated JWT subject.
 """
 from typing import Any, List, Optional
 
@@ -24,37 +24,28 @@ from multisource_data_agent.interfaces.http.models.chat_session import (
 
 router = APIRouter()
 
+from multisource_data_agent.interfaces.http.security import (
+    assert_claimed_user, owned_session, require_user, safe_error,
+)
+
 
 @router.get("/", response_model=List[ChatSessionResponse])
 def get_sessions(
     *,
     db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
     user_id: Optional[str] = Query(None, description="Filter by user ID (device ID, UUID, etc.)"),
     skip: int = 0,
     limit: int = 50,
     active_only: bool = True,
 ) -> Any:
-    """
-    Get list of chat sessions.
-
-    - If user_id is provided: Get sessions for that specific user
-    - If user_id is None: Get all sessions (across all users)
-
-    No authentication required.
-    """
-    if user_id:
+    """List only the authenticated subject's sessions; an absent filter never means all users."""
+    assert_claimed_user(user_id, subject)
+    if subject:
         # Get sessions for specific user
         sessions = chat_session.get_by_user(
             db,
-            user_id=user_id,
-            skip=skip,
-            limit=limit,
-            active_only=active_only
-        )
-    else:
-        # Get all sessions
-        sessions = chat_session.get_all(
-            db,
+            user_id=subject,
             skip=skip,
             limit=limit,
             active_only=active_only
@@ -68,6 +59,7 @@ def create_session(
     *,
     db: Session = Depends(get_db),
     session_in: ChatSessionCreate,
+    subject: str = Depends(require_user),
 ) -> Any:
     """
     Create a new chat session.
@@ -77,7 +69,10 @@ def create_session(
     - user_id: User identifier (device ID, UUID, etc.) - optional
     - title: Session title
     """
-    session = chat_session.create(db, obj_in=session_in)
+    assert_claimed_user(session_in.user_id, subject)
+    if chat_session.get(db, id=session_in.id):
+        raise safe_error(409, "session_id_unavailable", "Session ID is unavailable")
+    session = chat_session.create(db, obj_in=session_in.model_copy(update={"user_id": subject}))
     return session
 
 
@@ -86,11 +81,12 @@ def get_session(
     *,
     db: Session = Depends(get_db),
     session_id: str,
+    subject: str = Depends(require_user),
 ) -> Any:
     """
     Get a specific chat session by ID.
     """
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject)
 
     if not session:
         raise HTTPException(
@@ -107,13 +103,15 @@ def update_session(
     db: Session = Depends(get_db),
     session_id: str,
     session_update: ChatSessionUpdate,
+    subject: str = Depends(require_user),
 ) -> Any:
     """
     Update a chat session.
 
-    Can update: title, user_id, is_active
+    Can update title and is_active; ownership is immutable.
     """
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject, include_inactive=True)
+    assert_claimed_user(session_update.user_id, subject)
 
     if not session:
         raise HTTPException(
@@ -121,7 +119,9 @@ def update_session(
             detail="Session not found"
         )
 
-    session = chat_session.update(db, db_obj=session, obj_in=session_update)
+    session = chat_session.update(
+        db, db_obj=session, obj_in=session_update.model_dump(exclude_unset=True, exclude={"user_id"})
+    )
     return session
 
 
@@ -130,11 +130,12 @@ def delete_session(
     *,
     db: Session = Depends(get_db),
     session_id: str,
+    subject: str = Depends(require_user),
 ) -> None:
     """
     Soft delete a chat session.
     """
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject)
 
     if not session:
         raise HTTPException(
@@ -155,11 +156,12 @@ def add_message_to_session(
     db: Session = Depends(get_db),
     session_id: str,
     message_in: ChatMessageCreate,
+    subject: str = Depends(require_user),
 ) -> Any:
     """
     Add a message to a chat session.
     """
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject)
 
     if not session:
         raise HTTPException(
@@ -189,11 +191,12 @@ def create_session_snapshot(
     db: Session = Depends(get_db),
     session_id: str,
     snapshot_in: ChatSessionSnapshotCreate,
+    subject: str = Depends(require_user),
 ) -> Any:
     """
     Create a snapshot of a conversation turn for quick restoration.
     """
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject)
 
     if not session:
         raise HTTPException(
@@ -215,13 +218,15 @@ def get_user_session_count(
     *,
     db: Session = Depends(get_db),
     user_id: str,
+    subject: str = Depends(require_user),
 ) -> Any:
     """
     Get the total number of sessions for a user.
 
     Useful for analytics and user interface.
     """
-    count = chat_session.count_by_user(db, user_id=user_id)
+    assert_claimed_user(user_id, subject)
+    count = chat_session.count_by_user(db, user_id=subject)
 
     return {
         "user_id": user_id,

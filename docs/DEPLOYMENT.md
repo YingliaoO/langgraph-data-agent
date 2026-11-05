@@ -50,7 +50,7 @@ Copy-Item .env.example .env
 
 Compose 的 `environment` 在创建容器时注入。修改主机 `.env` 或执行 `docker compose restart backend`，不会更新已有容器的这部分环境变量；应用读取挂载的 `.env` 时，容器中旧环境变量还可能优先于新文件。
 
-确认 `DATABASE_URL` 指向正确的 MySQL 服务、数据库和有效账号后，重建后端容器：
+确认 `APP_DATABASE_URL` 与 `BUSINESS_DATABASE_URL` 分别指向正确的应用/业务数据库及独立账号后，重建后端容器：
 
 ```powershell
 docker compose config --quiet
@@ -308,9 +308,11 @@ services:
   backend:
     environment:
       DEBUG: "false"
-      DATABASE_URL: ${PROD_DATABASE_URL:?Set the production MySQL URL}
+      APP_DATABASE_URL: ${PROD_APP_DATABASE_URL:?Set the application database URL}
+      BUSINESS_DATABASE_URL: ${PROD_BUSINESS_DATABASE_URL:?Set the read-only business database URL}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?Set a random JWT signing secret}
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:?Set a separate random internal service token}
       MYSQL_ROOT_PASSWORD: ""
-      MYSQL_PASSWORD: ${PROD_MYSQL_PASSWORD:?Set a unique production password}
       NEO4J_PASSWORD: ${PROD_NEO4J_PASSWORD:?Set a unique production password}
     command: ["uvicorn", "multisource_data_agent.main:application", "--host", "0.0.0.0", "--port", "8000"]
     # No source, .env, or host database bind mount. Existing DB volume keys stay unchanged.
@@ -333,7 +335,9 @@ services:
   mysql:
     environment:
       MYSQL_ROOT_PASSWORD: ${PROD_MYSQL_ROOT_PASSWORD:?Set a distinct root password}
-      MYSQL_PASSWORD: ${PROD_MYSQL_PASSWORD:?Set a unique production password}
+      MYSQL_PASSWORD: ${PROD_MYSQL_PASSWORD:?Set a unique production seed account password}
+      APP_DB_PASSWORD: ${PROD_APP_DB_PASSWORD:?Set an application account password}
+      BUSINESS_DB_PASSWORD: ${PROD_BUSINESS_DB_PASSWORD:?Set a read-only account password}
     ports: !reset []
   kb_postgres:
     environment:
@@ -343,6 +347,7 @@ services:
     env_file: !reset []
     environment:
       PGPASSWORD: ${PROD_PG_PASSWORD:?Set a unique production password}
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:?Set a separate random internal service token}
     # Use the entrypoint baked into the image, not a host script.
     volumes: !override
       - type: bind
@@ -355,7 +360,7 @@ services:
 在仓库外创建生产环境变量文件，并限制文件访问权限。沿用 `.env.example` 中需要的模型、数据库名/用户名等配置，但**不能沿用演示密码**。另需显式提供：
 
 - `PROD_MYSQL_ROOT_PASSWORD`、`PROD_MYSQL_PASSWORD`、`PROD_NEO4J_PASSWORD`、`PROD_PG_PASSWORD`：分别生成强随机密码，不提供默认值；不要复用生产凭据，也不要提交该文件。
-- `PROD_DATABASE_URL`：使用相同 MySQL 应用用户/密码的连接 URL，主机为 `mysql:3306`；特殊字符须 URL 编码，禁止使用 root 账户。
+- `PROD_APP_DATABASE_URL`、`PROD_BUSINESS_DATABASE_URL`：分别使用独立应用账户和只读业务账户；密码对应 `PROD_APP_DB_PASSWORD`、`PROD_BUSINESS_DB_PASSWORD`，两套账号不得共用。主机为 `mysql:3306`；特殊字符须 URL 编码，禁止使用 root 账户。
 - `NEO4J_USER=neo4j`、`NEO4J_URI=bolt://neo4j:7687`；`KB_PGHOST=kb_postgres`、`KB_PGPORT=5432`。服务之间使用容器网络地址。
 - `PROD_RUNTIME_DIR`、`PROD_UPLOAD_DIR`、`PROD_INGEST_DATA_DIR`：预先创建、限制权限的**绝对路径**。需要已有 SQLite 数据时，运行目录必须包含原数据库文件，默认文件名仍是 `gustobot.db`；不自动迁移或重命名。
 - `CORS_ORIGINS`：实际前端来源；它不是用户认证机制。生产的模型密钥通过外部文件/环境注入，不写入镜像。
@@ -374,7 +379,7 @@ Linux/macOS 使用相应的绝对路径与 shell 变量。不要同时使用基�
 
 **已有数据卷的注意事项：** 设置新的 MySQL/PostgreSQL/Neo4j 环境变量不会自动更改已初始化数据库中的密码。应先备份，由管理员在数据库中更新账户密码，再协调应用凭据切换；不能用 `down -v` 代替密码轮换，也不能把原开发卷直接当成已完成生产加固的数据。生产部署使用独立的 Compose project name 时会得到独立卷；切换前必须明确数据迁移/备份计划，不要意外切换原部署的 project name。
 
-按当前 `langchain-neo4j==0.3.0` 的默认 schema 刷新路径，仅允许 `apoc.meta.data` 和 `apoc.schema.nodes`，两者均需获得 unrestricted 权限；`apoc.schema.nodes` 在 Neo4j 5.18 的沙箱内不可用。当前主链未启用 enhanced schema。上线前在目标 Neo4j/APOC 版本上验证 schema 刷新与图查询；如确有权限错误，核对实际需要的过程，不恢复 `apoc.*`。此模板不实现 TLS、Auth/RBAC、租户隔离、自动密码轮换或数据库最小权限账户配置；这些仍由部署方完成。
+按当前 `langchain-neo4j==0.3.0` 的默认 schema 刷新路径，仅允许 `apoc.meta.data` 和 `apoc.schema.nodes`，两者均需获得 unrestricted 权限；`apoc.schema.nodes` 在 Neo4j 5.18 的沙箱内不可用。当前主链未启用 enhanced schema。上线前在目标 Neo4j/APOC 版本上验证 schema 刷新与图查询；如确有权限错误，核对实际需要的过程，不恢复 `apoc.*`。API 已实现 JWT subject/Session owner 隔离和独立业务只读账户检查；此模板不实现 TLS、完整 RBAC、业务数据租户/行级权限或自动密码轮换，这些仍由部署方完成。
 
 ### 名称与数据兼容
 
@@ -383,3 +388,26 @@ Linux/macOS 使用相应的绝对路径与 shell 变量。不要同时使用基�
 ### 构建依赖来源
 
 前端锁文件使用官方 `registry.npmjs.org`，执行 `npm ci` 保留锁定版本。两个 Python 镜像保留官方基础镜像的 Debian 源，pip 使用 `https://pypi.org/simple`；不注入地区镜像。如果部署网络无法访问，请在本地受控环境配置代理/缓存，不提交包含凭据的镜像配置。
+
+
+## 安全发布配置与升级
+
+`APP_DATABASE_URL` 仅用于应用持久化。旧 `DATABASE_URL` 仅作为应用配置兼容别名；Text2SQL **不会**回退到它。`BUSINESS_DATABASE_URL` 必须显式配置独立 MySQL 只读账户，且默认库位于 `BUSINESS_ALLOWED_SCHEMAS`；`BUSINESS_ALLOWED_TABLES` 是显式表白名单。SQL 执行前检查实际 `SHOW GRANTS`，拒绝写权限、全库/全局 SELECT、GRANT OPTION 和不明确的角色授权，再设置会话事务只读。Schema 检索和执行使用同一个业务连接。
+
+本地新卷首次初始化时，MySQL 加载公开合成零售 seed，再执行 `scripts/init_mysql_roles.sh`：应用账户只能管理独立 `agent_app` 库，业务账户只对五张零售表有 SELECT 权限。初始化脚本不对已有卷自动执行。已有安装必须由管理员先备份并检查账户/现有表，再显式执行角色脚本；不要删除数据卷。迁移 APP URL 不会自动搬迁旧用户/聊天数据，已有应用数据须单独迁移。历史无 owner 的 Session 不对外开放，也不会自动认领。
+
+`AUTH_JWT_SECRET` 和 `KNOWLEDGE_SERVICE_TOKEN` 使用分别生成的随机值（至少 32 字节），不能使用示例固定值。所有 Chat、Session、History、Upload API 必须提交 `Authorization: Bearer <token>`；验证 HS256 签名、issuer、audience、exp、iat 和 sub，身份只取 sub。没有密钥时受保护接口关闭，不回退为匿名或 default_user。只读 `/health`、`/ready` 保留给健康检查，不能证明外部模型密钥有效。
+
+管理员在可信本机离线签发短期 token：
+
+```powershell
+$env:MULTISOURCE_AGENT_ACCESS_TOKEN = python scripts/create_access_token.py --subject demo-operator
+```
+
+不要把签名密钥或访问 token 写进 Git、截图、日志、URL、VITE_ 环境变量或前端构建。Vue 控制台在页面中输入短期 Bearer token，仅保存在当前页面内存。没有新增用户注册/登录平台；生产应接入可信身份签发流程、HTTPS 和速率控制。
+
+backend 调用 kb_ingest 时带 `X-Knowledge-Service-Key`，两个服务必须注入相同 `KNOWLEDGE_SERVICE_TOKEN`。知识服务的 `/api` 与 `/api/v1/knowledge` 保护规则一致；不要将该内部密钥交给浏览器。`FILE_UPLOAD_MAX_MB` 同时控制两个服务，每文件分块限制且原始请求体另有固定大小的 multipart 开销预算。
+
+上传返回服务器生成的 `file_id`；Chat 只接受该用户拥有的 file_id，不再接受客户端 server file_path。旧上传响应保留 file_path 展示字段但它不是可提交的路径。上传文件不再匿名静态公开。遗留知识服务的预置 Excel 入口仅接受 `INGEST_UPLOAD_DIR` 内的文件名，不能提交任意绝对路径。
+
+SSE `/api/v1/chat/stream` 提供 progress → final/error → done，是完整生成结果的事件流，不是模型 token streaming。成功最终消息在 final 事件前写入该用户的聊天历史；客户端断开时取消工作，不伪造 final 或继续往断开的连接写 done。

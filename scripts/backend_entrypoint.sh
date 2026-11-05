@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import pymysql
 
-database_url = os.getenv("DATABASE_URL", "").strip()
+database_url = os.getenv("APP_DATABASE_URL", os.getenv("DATABASE_URL", "")).strip()
 if not database_url or database_url.startswith("sqlite"):
     print("[backend] DATABASE_URL indicates SQLite or is unset; skipping MySQL wait.")
     raise SystemExit(0)

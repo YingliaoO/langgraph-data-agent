@@ -66,6 +66,7 @@ class InputState:
 
     messages: Annotated[list[AnyMessage], add_messages]
     eval_trace: Dict[str, Any] = field(default_factory=dict)
+    uploaded_file: Optional[Dict[str, str]] = None
 
     """Messages track the primary execution state of the agent.
 

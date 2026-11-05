@@ -1,7 +1,7 @@
 """
 CRUD operations for ChatSession model.
 
-Lightweight user ID system - group sessions by user_id without authentication.
+Session ownership is enforced at the authenticated HTTP boundary.
 """
 from datetime import datetime
 from typing import List, Optional
@@ -10,12 +10,19 @@ from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
 
 from multisource_data_agent.infrastructure.persistence.crud.base import CRUDBase
+from multisource_data_agent.infrastructure.core.database import owner_filter
 from multisource_data_agent.infrastructure.persistence.db.models.chat_session import ChatSession
 from multisource_data_agent.interfaces.http.models.chat_session import ChatSessionCreate, ChatSessionUpdate
 
 
 class CRUDChatSession(CRUDBase[ChatSession, ChatSessionCreate, ChatSessionUpdate]):
     """CRUD operations for ChatSession model."""
+
+    def get_owned(self, db: Session, *, session_id: str, user_id: str, active_only: bool = True) -> Optional[ChatSession]:
+        query = db.query(self.model).filter(self.model.id == session_id, owner_filter(self.model.user_id, user_id))
+        if active_only:
+            query = query.filter(self.model.is_active.is_(True))
+        return query.first()
 
     def get_all(
         self,
@@ -66,7 +73,7 @@ class CRUDChatSession(CRUDBase[ChatSession, ChatSessionCreate, ChatSessionUpdate
         Returns:
             List of chat sessions for the user
         """
-        query = db.query(self.model).filter(self.model.user_id == user_id)
+        query = db.query(self.model).filter(owner_filter(self.model.user_id, user_id))
 
         if active_only:
             query = query.filter(self.model.is_active == True)  # noqa: E712
@@ -164,7 +171,7 @@ class CRUDChatSession(CRUDBase[ChatSession, ChatSessionCreate, ChatSessionUpdate
         Returns:
             Number of sessions
         """
-        return db.query(self.model).filter(self.model.user_id == user_id).count()
+        return db.query(self.model).filter(owner_filter(self.model.user_id, user_id)).count()
 
 
 # Create singleton instance

@@ -149,7 +149,8 @@ class _Session:
     async def __aexit__(self, *args):
         return False
 
-    def post(self, url, *, json):
+    def post(self, url, *, json, headers):
+        assert "X-Knowledge-Service-Key" in headers
         _Session.last_payload = json
         return _Response()
 

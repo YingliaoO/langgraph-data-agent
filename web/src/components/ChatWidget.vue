@@ -31,6 +31,9 @@
         </header>
 
         <div class="console-content">
+          <label class="auth-input">API Bearer Token（仅保存在当前页面内存）
+            <input v-model="accessToken" type="password" autocomplete="off" placeholder="粘贴管理员签发的短期访问令牌" aria-label="API Bearer Token" />
+          </label>
           <section ref="messageContainer" class="chat-body">
           <div class="suggestion-bar">
             <button
@@ -328,6 +331,12 @@ interface TraceSnapshot {
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const accessToken = ref("");
+
+function authHeaders(): Record<string, string> {
+  if (!accessToken.value.trim()) throw new Error("请先填写有效的 API Bearer Token");
+  return { Authorization: `Bearer ${accessToken.value.trim()}` };
+}
 
 const defaultState = () => ({
   isOpen: false,
@@ -419,6 +428,8 @@ function resetSession() {
   state.attachedFilePath = "";
 }
 
+watch(accessToken, () => resetSession());
+
 async function onFileSelected(event: Event) {
   const input = event.target as HTMLInputElement;
   const file = input.files?.[0];
@@ -429,10 +440,10 @@ async function onFileSelected(event: Event) {
     const formData = new FormData();
     formData.append("file", file);
     const { data } = await axios.post(`${API_BASE}/api/v1/upload/file`, formData, {
-      headers: { "Content-Type": "multipart/form-data" }
+      headers: authHeaders()
     });
     if (data?.success) {
-      state.attachedFilePath = data.file_path;
+      state.attachedFilePath = data.file_id;
       state.attachedFileName = data.original_name || file.name;
       state.uploadStatus = `已上传：${state.attachedFileName}`;
     } else {
@@ -472,11 +483,11 @@ async function sendMessage() {
     };
 
     if (state.attachedFilePath) {
-      payload.file_path = state.attachedFilePath;
+      payload.file_id = state.attachedFilePath;
       payload.ingest_incremental = true;
     }
 
-    const { data } = await axios.post<ChatResponse>(`${API_BASE}/api/v1/chat`, payload);
+    const { data } = await axios.post<ChatResponse>(`${API_BASE}/api/v1/chat/`, payload, { headers: authHeaders() });
     const execution = normalizeExecution(data.execution);
 
     if (data?.message) {

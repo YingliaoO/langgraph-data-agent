@@ -126,6 +126,8 @@ async def analyze_and_route_query(
         dict[str, Router]：字典类型，包含键「router」，对应值为分类结果（含分类类型与判定逻辑）。
 """
 
+    if state.uploaded_file:
+        return {"router": Router(type="file-query", logic="Authenticated upload", question="")}
     if not settings.OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not configured for router analysis.")
 
@@ -255,12 +257,9 @@ def route_query(
 
     # Uploaded tabular datasets are the only non-chat payload handled by the
     # product router. Image/Vision processing is intentionally out of scope.
-    if hasattr(state, "config") and state.config:
-        cfg = state.config.get("configurable", {})
-        if cfg.get("file_path"):
-            logger.info("检测到数据集路径，转为数据集导入处理")
-            trace_event(trace, "route_query", "next_node", route=_type, next_node="create_file_query", metadata={"reason": "file_path"})
-            return "create_file_query"
+    if state.uploaded_file:
+        trace_event(trace, "route_query", "next_node", route="file-query", next_node="create_file_query", metadata={"reason": "authenticated_file_id"})
+        return "create_file_query"
 
     if _type == "general-query":
         next_node = "respond_to_general_query"
@@ -483,7 +482,9 @@ async def create_file_query(
     trace = get_trace(state, config)
     user_question = state.messages[-1].content if state.messages else ""
     config_opts = _extract_configurable(config)
-    file_path = config_opts.get("file_path")
+    upload = state.uploaded_file or {}
+    from multisource_data_agent.infrastructure.core.uploads import controlled_path
+    file_path = str(controlled_path(upload["storage_name"])) if upload.get("storage_name") else None
     ingest_service_url = settings.INGEST_SERVICE_URL
     trace_event(
         trace,
@@ -549,7 +550,7 @@ async def create_file_query(
             form.add_field(
                 "file",
                 file_handle,
-                filename=p.name,
+                filename=upload.get("original_name", p.name),
                 content_type="application/octet-stream",
             )
             timeout = aiohttp.ClientTimeout(total=60)
@@ -557,6 +558,7 @@ async def create_file_query(
                 async with session.post(
                     f"{ingest_service_url.rstrip('/')}/api/v1/knowledge/ingest/dataset/upload",
                     data=form,
+                    headers={"X-Knowledge-Service-Key": settings.KNOWLEDGE_SERVICE_TOKEN or ""},
                 ) as resp:
                     body = await resp.text()
                     if resp.status not in (200, 202):

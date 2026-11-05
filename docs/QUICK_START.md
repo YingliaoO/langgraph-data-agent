@@ -12,7 +12,7 @@ python -m pip check
 Copy-Item .env.example .env
 ```
 
-编辑 `.env`，填写有效的 LLM、Embedding、Reranker 和数据库配置。模型调用可能收费；不要提交密钥。若已存在 `.env`，保留自己的配置并对照模板补齐，不直接覆盖。
+编辑 `.env`，填写有效的 LLM、Embedding、Reranker、APP_DATABASE_URL 和只读 BUSINESS_DATABASE_URL。分别生成随机 AUTH_JWT_SECRET、KNOWLEDGE_SERVICE_TOKEN（至少 32 字节），两个服务使用相同知识服务 token。模型调用可能收费；不要提交密钥。若已存在 `.env`，保留自己的配置并对照模板补齐，不直接覆盖。
 
 Linux/macOS 使用 `source .venv/bin/activate` 和 `cp .env.example .env`。依赖以 `pyproject.toml` 为主，`requirements.txt` 安装当前项目及测试所需 extra。
 
@@ -35,6 +35,7 @@ Compose 提供 backend、mysql、neo4j、kb_postgres、kb_ingest 五个服务，
 先阅读[数据说明](ENTERPRISE_RETAIL_DEMO.md)。初始化脚本会写入 MySQL 零售表、Neo4j 零售图和 PGVector 知识集。首次使用建议采用隔离的本地演示环境；已有数据环境应先备份并检查脚本，不当成只读健康检查。
 
 ```powershell
+$env:MULTISOURCE_AGENT_ACCESS_TOKEN = python scripts/create_access_token.py --subject demo-operator
 python .\demo\enterprise_retail\bootstrap.py
 python -u .\demo\enterprise_retail\smoke.py
 ```
@@ -48,7 +49,7 @@ npm --prefix .\web ci
 npm --prefix .\web run dev
 ```
 
-在终端显示的本地地址打开 Vue 页面。依次尝试：
+在终端显示的本地地址打开 Vue 页面，在控制台令牌输入框粘贴短期 Bearer token，再依次尝试：
 
 | 问题 | seed 中可核对的预期事实 |
 | --- | --- |
@@ -66,10 +67,9 @@ PowerShell 将 JSON 编码为 UTF-8 字节，避免中文与命令行引号解�
 ```powershell
 $payload = @{
     message = "请使用 MySQL 查询 retail_orders 当前一共有多少个订单。"
-    session_id = "quickstart-$([guid]::NewGuid().ToString('N'))"
 } | ConvertTo-Json -Compress
 $body = [System.Text.Encoding]::UTF8.GetBytes($payload)
-$response = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/chat/" -Method Post -ContentType "application/json; charset=utf-8" -Body $body -TimeoutSec 600
+$response = Invoke-RestMethod -Uri "http://localhost:8000/api/v1/chat/" -Method Post -Headers @{ Authorization = "Bearer $env:MULTISOURCE_AGENT_ACCESS_TOKEN" } -ContentType "application/json; charset=utf-8" -Body $body -TimeoutSec 600
 $response | ConvertTo-Json -Depth 20
 ```
 
@@ -93,3 +93,5 @@ npm --prefix .\web run build
 真实 HTTP Eval 的命令、计费及分母区别见[评测入口](../eval/README.md)。以本机当前环境的实际输出为准，不能以其他运行代替验证。
 
 遇到慢请求先查看阶段耗时，区分规划、工具、模型生成与答案汇总；不要仅凭总耗时归因数据库。模型配置修改后需按[部署说明](DEPLOYMENT.md)重建相应服务容器。
+
+认证、数据库账户初始化、已有卷迁移和 file_id 升级细节见[安全发布配置](DEPLOYMENT.md#安全发布配置与升级)。不要为解决 401 绕过认证。

@@ -7,7 +7,8 @@ import os
 from urllib.parse import urlsplit
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +18,10 @@ from multisource_data_agent.config import settings
 from multisource_data_agent.infrastructure.core import configure_logging
 from multisource_data_agent.infrastructure.core.database import Base, engine
 from multisource_data_agent.interfaces.http.v1 import api_router as api_v1_router
+from multisource_data_agent.interfaces.http.security import request_trace_id
+from uuid import uuid4
+from multisource_data_agent.interfaces.http.body_limit import RequestBodyLimit
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 # Configure logging before app creation
 configure_logging(debug=settings.DEBUG)
@@ -33,22 +38,30 @@ application = FastAPI(
 # Global middleware -----------------------------------------------------------
 application.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源，方便开发和测试
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Routers --------------------------------------------------------------------
+application.add_middleware(RequestBodyLimit, limit_bytes=lambda: settings.FILE_UPLOAD_MAX_MB * 1024 * 1024)
 application.include_router(api_v1_router, prefix=settings.API_V1_PREFIX)
 
-# Static files ---------------------------------------------------------------
-# 创建上传目录
-uploads_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads")
-os.makedirs(uploads_dir, exist_ok=True)
+# Uploads are served exclusively by the authenticated upload router.
 
-# 挂载静态文件
-application.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
+@application.middleware("http")
+async def trace_http_request(request: Request, call_next):
+    trace_id = str(uuid4())
+    request.state.trace_id = trace_id
+    token = request_trace_id.set(trace_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Trace-ID"] = trace_id
+        return response
+    finally:
+        request_trace_id.reset(token)
 
 @application.get("/")
 async def root_redirect():
@@ -89,7 +102,8 @@ _READINESS_TIMEOUT_SECONDS = 2.0
 def _readiness_targets() -> dict[str, tuple[str, int]]:
     """Core internal dependencies required by the default product runtime."""
     return {
-        "database": (str(settings.DATABASE_URL or ""), 3306),
+        "database": (str(settings.APP_DATABASE_URL or ""), 3306),
+        "business_database": (str(settings.BUSINESS_DATABASE_URL or ""), 3306),
         "neo4j": (str(settings.NEO4J_URI or ""), 7687),
         "knowledge_service": (str(settings.INGEST_SERVICE_URL or ""), 8000),
     }
@@ -136,6 +150,7 @@ async def _readiness_snapshot() -> tuple[bool, dict[str, str]]:
         for name, probe_ok in zip(names, probe_results)
     }
     checks["llm_config"] = "ok" if settings.OPENAI_API_KEY else "missing"
+    checks["auth_config"] = "ok" if settings.AUTH_JWT_SECRET and len(settings.AUTH_JWT_SECRET.encode()) >= 32 else "missing"
     return all(value == "ok" for value in checks.values()), checks
 
 
@@ -162,6 +177,9 @@ async def startup_event() -> None:
     # Auto-create database tables on startup
     import multisource_data_agent.infrastructure.persistence.db.models  # noqa: F401 - Import all models to register them with Base
     logger.info("Creating database tables if not exist...")
+    if engine.dialect.name == "sqlite" and engine.url.database not in (None, "", ":memory:"):
+        from pathlib import Path
+        Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables ready")
 
@@ -175,14 +193,37 @@ async def shutdown_event() -> None:
 
 @application.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled exception on {} {}: {}", request.method, request.url, exc)
+    trace_id = getattr(request.state, "trace_id", str(uuid4()))
+    logger.opt(exception=exc).error("Unhandled exception on {} {}, trace_id={}", request.method, request.url.path, trace_id)
     return JSONResponse(
         status_code=500,
         content={
-            "error": "Internal Server Error",
-            "message": str(exc) if settings.DEBUG else "An unexpected error occurred",
+            "code": "internal_error", "category": "internal_error",
+            "message": "An unexpected error occurred", "trace_id": trace_id,
         },
     )
+
+
+@application.exception_handler(HTTPException)
+@application.exception_handler(StarletteHTTPException)
+async def safe_http_error(request: Request, exc: HTTPException) -> JSONResponse:
+    trace_id = getattr(request.state, "trace_id", str(uuid4()))
+    detail = exc.detail if isinstance(exc.detail, dict) and "code" in exc.detail else {
+        "code": "request_failed", "category": "request_error",
+        "message": "The request could not be completed",
+    }
+    if exc.status_code >= 500 and not isinstance(exc.detail, dict):
+        logger.opt(exception=exc).error("HTTP failure, trace_id={}", trace_id)
+    return JSONResponse(status_code=exc.status_code, content={"detail": {**detail, "trace_id": trace_id}}, headers=exc.headers)
+
+
+@application.exception_handler(RequestValidationError)
+async def safe_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": {
+        "code": "invalid_request", "category": "validation", "message": "Request validation failed",
+        "trace_id": getattr(request.state, "trace_id", str(uuid4())),
+        "fields": [{"loc": list(item["loc"]), "type": item["type"]} for item in exc.errors()],
+    }})
 
 
 if __name__ == "__main__":

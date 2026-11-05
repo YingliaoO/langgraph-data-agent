@@ -130,10 +130,9 @@ def build_evidence_context(tool_results: Sequence[Any]) -> EvidenceContext:
             "statement_language": statement_language if statement_language in {"sql", "cypher"} else None,
         })
         if status == "error":
-            raw_meta = _field(result, "metadata") or {}
-            raw_error = raw_meta.get("errors") or raw_meta.get("error") if isinstance(raw_meta, dict) else None
-            raw_error = raw_error or _field(result, "answer") or "Tool failed."
-            context.metadata["errors"].append(f"{task}: {_clip(raw_error, 350)}")
+            # Neither the model prompt nor deterministic answer fallback may echo driver exceptions.
+            # Detailed failures remain in server-side diagnostics; status/codes remain in execution.
+            context.metadata["errors"].append(f"{task}: Tool execution failed; this task produced no evidence.")
             continue
 
         answer = _field(result, "answer")

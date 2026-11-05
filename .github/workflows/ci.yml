@@ -31,6 +31,10 @@ jobs:
           python -m pip check
       - name: Deterministic tests (no external LLM or databases)
         run: python -m pytest -q
+      - name: Security boundary formatting and types
+        run: |
+          python -m black --check multisource_data_agent/infrastructure/core/business_database.py multisource_data_agent/infrastructure/core/uploads.py multisource_data_agent/interfaces/http/security.py multisource_data_agent/interfaces/http/body_limit.py multisource_data_agent/infrastructure/persistence/db/models/uploaded_file.py kb_ingest/kb_service/api/upload_security.py tests/test_release_security.py tests/test_knowledge_upload_security.py scripts/create_access_token.py
+          python -m mypy --follow-imports=silent --ignore-missing-imports multisource_data_agent/infrastructure/core/business_database.py multisource_data_agent/infrastructure/core/uploads.py multisource_data_agent/interfaces/http/security.py multisource_data_agent/interfaces/http/body_limit.py
       - name: Build and inspect backend wheel
         run: |
           python -m pip wheel --no-deps --wheel-dir "$RUNNER_TEMP/wheels" .
@@ -60,4 +64,6 @@ jobs:
       - run: npm run lint
         working-directory: web
       - run: npm run build
+        working-directory: web
+      - run: npm audit --registry=https://registry.npmjs.org
         working-directory: web

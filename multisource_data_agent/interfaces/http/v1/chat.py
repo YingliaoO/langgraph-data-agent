@@ -28,11 +28,16 @@ from multisource_data_agent.application.agents.observability import (
     trace_event,
 )
 from multisource_data_agent.config import settings
-from multisource_data_agent.infrastructure.core.database import get_db
+from multisource_data_agent.infrastructure.core.database import get_db, SessionLocal
 from multisource_data_agent.infrastructure.persistence.crud import chat_message, chat_session
 from multisource_data_agent.interfaces.http.models.chat_message import ChatMessageCreate, ChatMessageResponse
 from multisource_data_agent.interfaces.http.models.chat_session import ChatSessionCreate, ChatSessionResponse
 from sqlalchemy.orm import Session
+
+from multisource_data_agent.interfaces.http.security import (
+    require_user, assert_claimed_user, owned_session, safe_error, public_error_details,
+)
+from multisource_data_agent.infrastructure.core.uploads import resolve_upload
 
 router = APIRouter()
 
@@ -41,10 +46,11 @@ class ChatRequest(BaseModel):
     """Chat request model"""
     message: str = Field(..., description="User message", min_length=1, max_length=5000)
     session_id: Optional[str] = Field(None, description="Session ID for conversation continuity")
-    user_id: Optional[str] = Field("default_user", description="User identifier")
-    stream: bool = Field(False, description="Enable streaming response")
-    file_path: Optional[str] = Field(None, description="Path to uploaded file")
-    trace_id: Optional[str] = Field(None, description="Optional request trace id")
+    user_id: Optional[str] = Field(None, description="Deprecated claim; must equal authenticated JWT sub")
+    stream: bool = Field(False, description="Compatibility field; use /chat/stream for progress/final SSE")
+    file_id: Optional[str] = Field(None, description="ID returned by authenticated upload")
+    file_path: Optional[str] = Field(None, description="Deprecated; raw server paths are rejected")
+    trace_id: Optional[str] = Field(None, pattern=r"^[A-Za-z0-9_-]{1,128}$", description="Optional request trace id")
     ingest_incremental: Optional[bool] = Field(
         None,
         description="Override whether CSV/Excel dataset ingestion uses incremental mode (defaults to server setting)",
@@ -66,7 +72,7 @@ class ChatResponse(BaseModel):
 
 class ChatStreamChunk(BaseModel):
     """Streaming response chunk"""
-    type: str = Field(..., description="Chunk type: 'message', 'metadata', 'error', 'done'")
+    type: str = Field(..., description="Event type: progress, final, error, done (not token streaming)")
     content: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
     session_id: Optional[str] = None
@@ -76,9 +82,8 @@ class ChatStreamChunk(BaseModel):
 def get_or_create_session(db: Session, session_id: Optional[str], user_id: str) -> str:
     """Get existing session or create new one"""
     if session_id:
-        session = chat_session.get(db, id=session_id)
-        if session:
-            return session_id
+        owned_session(db, session_id, user_id)
+        return session_id
 
     # Create new session
     new_session_id = str(uuid.uuid4())
@@ -135,15 +140,16 @@ async def save_message(db: Session, session_id: str, message: str, is_user: bool
         chat_session.update_activity(db, session_id=session_id)
         return str(created.id)
     except Exception as e:
-        logger.error(f"Failed to save message: {e}")
-        return None
+        logger.opt(exception=e).error("Failed to persist chat message")
+        raise safe_error(500, "message_persistence_failed", "The message could not be saved", "persistence") from None
 
 
 async def process_agent_query(message: str, session_id: str,
                             file_path: Optional[str] = None,
                             ingest_incremental: Optional[bool] = None,
                             user_id: Optional[str] = None,
-                            trace_id: Optional[str] = None) -> Dict[str, Any]:
+                            trace_id: Optional[str] = None,
+                            uploaded_file: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Process query through agent system"""
     incremental_flag = (
         settings.INGEST_INCREMENTAL_DEFAULT if ingest_incremental is None else bool(ingest_incremental)
@@ -163,7 +169,6 @@ async def process_agent_query(message: str, session_id: str,
     config = {
         "configurable": {
             "thread_id": session_id,
-            "file_path": file_path,
             "incremental": incremental_flag,
             "trace_id": eval_trace["trace_id"],
             "eval_trace": eval_trace,
@@ -173,6 +178,7 @@ async def process_agent_query(message: str, session_id: str,
     input_state = {
         "messages": [{"type": "human", "content": message}],
         "eval_trace": eval_trace,
+        "uploaded_file": uploaded_file,
     }
 
     try:
@@ -237,7 +243,9 @@ async def process_agent_query(message: str, session_id: str,
             route=route,
         )
 
-        return {
+        if execution.status == "error":
+            response_text = "未能完成数据查询，请检查请求或稍后重试。"
+        return public_error_details({
             "message": response_text,
             "route": route,
             "route_logic": route_logic,
@@ -248,9 +256,9 @@ async def process_agent_query(message: str, session_id: str,
                 "eval_trace": eval_trace,
             },
             "execution": execution.model_dump(mode="json"),
-        }
+        })
     except asyncio.TimeoutError as e:
-        logger.error("Agent query exceeded timeout budget", exc_info=True)
+        logger.opt(exception=e).error("Agent query exceeded timeout budget")
         trace_event(
             eval_trace,
             "agent_graph",
@@ -264,116 +272,97 @@ async def process_agent_query(message: str, session_id: str,
             },
         )
         finish_trace(eval_trace, route="error", error="agent timeout")
-        return {
+        return public_error_details({
             "message": "抱歉，请求处理超时，请稍后重试。",
             "route": "error",
             "route_logic": "Error: agent timeout",
             "sources": [],
             "metadata": {
                 "error": "agent timeout",
+                "error_code": "agent_timeout",
+                "error_category": "timeout",
                 "trace_id": eval_trace.get("trace_id"),
                 "eval_trace": eval_trace,
             },
             "execution": build_execution_dto(
                 trace=eval_trace, route="error"
             ).model_dump(mode="json"),
-        }
+        })
     except Exception as e:
-        logger.error("Agent query failed: {}", e, exc_info=True)
-        trace_event(eval_trace, "agent_graph", "error", success=False, error=e, fallback=True)
+        logger.opt(exception=e).error("Agent query failed")
+        trace_event(eval_trace, "agent_graph", "error", success=False, error=e, error_code="agent_execution_failed", fallback=True)
         finish_trace(eval_trace, route="error", error=str(e))
-        return {
+        return public_error_details({
             "message": "抱歉，处理您的请求时出现了错误。请稍后重试。",
             "route": "error",
-            "route_logic": f"Error: {str(e)}",
+            "route_logic": "agent_execution_failed",
             "sources": [],
-            "metadata": {"error": str(e), "trace_id": eval_trace.get("trace_id"), "eval_trace": eval_trace},
+            "metadata": {"error": str(e), "error_code": "agent_execution_failed", "error_category": "execution", "trace_id": eval_trace.get("trace_id"), "eval_trace": eval_trace},
             "execution": build_execution_dto(trace=eval_trace, route="error").model_dump(mode="json"),
-        }
+        })
 
 
 async def stream_agent_response(message: str, session_id: str,
                                file_path: Optional[str] = None,
                                ingest_incremental: Optional[bool] = None,
                                user_id: Optional[str] = None,
-                               trace_id: Optional[str] = None) -> AsyncGenerator[str, None]:
-    """Stream agent response"""
+                               trace_id: Optional[str] = None,
+                               uploaded_file: Optional[Dict[str, str]] = None,
+                               on_complete=None) -> AsyncGenerator[str, None]:
+    """Progress and final-result SSE. This is not model-token streaming."""
     trace_id = trace_id or str(uuid.uuid4())
-    # Send initial metadata
-    metadata_chunk = ChatStreamChunk(
-        type="metadata",
-        metadata={"status": "processing", "trace_id": trace_id},
-        session_id=session_id
-    )
-    yield f"data: {metadata_chunk.model_dump_json()}\n\n"
+
+    def event(kind, content=None, metadata=None):
+        chunk = ChatStreamChunk(type=kind, content=content, metadata=metadata,
+                                session_id=session_id)
+        return f"event: {kind}\ndata: {chunk.model_dump_json()}\n\n"
 
     try:
-        # Process the query
+        yield event("progress", metadata={"status": "processing", "trace_id": trace_id})
         result = await process_agent_query(
-            message,
-            session_id,
-            file_path,
-            ingest_incremental,
-            user_id=user_id,
-            trace_id=trace_id,
+            message, session_id, ingest_incremental=ingest_incremental,
+            user_id=user_id, trace_id=trace_id, uploaded_file=uploaded_file,
         )
+        if on_complete is not None:
+            await on_complete(result)
+        metadata = public_error_details({
+            "route": result.get("route"), "sources": result.get("sources", []),
+            "execution": result.get("execution"), "trace_id": trace_id,
+        })
+        if result.get("route") == "error":
+            yield event("error", content=result["message"], metadata={
+                **metadata, "code": "agent_execution_failed", "category": "execution",
+            })
+        else:
+            yield event("final", content=result["message"], metadata=metadata)
+    except (asyncio.CancelledError, GeneratorExit):
+        logger.info("SSE client disconnected, trace_id={}", trace_id)
+        raise
+    except Exception as exc:
+        logger.opt(exception=exc).error("SSE request failed, trace_id={}", trace_id)
+        yield event("error", "The request could not be completed", {
+            "code": "stream_failed", "category": "execution", "trace_id": trace_id,
+        })
+    yield event("done", metadata={"trace_id": trace_id})
 
-        # Send route information
-        route_chunk = ChatStreamChunk(
-            type="metadata",
-            metadata={
-                "route": result["route"],
-                "logic": result["route_logic"],
-                "trace_id": result.get("metadata", {}).get("trace_id"),
-            },
-            session_id=session_id,
-            route=result["route"]
-        )
-        yield f"data: {route_chunk.model_dump_json()}\n\n"
 
-        # Stream the response message (simulated - in real implementation, you'd stream from LLM)
-        response_text = result["message"]
-        words = response_text.split()
-        current_text = ""
-
-        for word in words:
-            current_text += word + " "
-            message_chunk = ChatStreamChunk(
-                type="message",
-                content=word + " ",
-                session_id=session_id
-            )
-            yield f"data: {message_chunk.model_dump_json()}\n\n"
-            await asyncio.sleep(0.05)  # Simulate streaming delay
-
-        # Send done signal
-        done_chunk = ChatStreamChunk(
-            type="done",
-            metadata={
-                "sources": result.get("sources", []),
-                "trace_id": result.get("metadata", {}).get("trace_id"),
-                "eval_trace": result.get("metadata", {}).get("eval_trace"),
-                "execution": result.get("execution"),
-            },
-            session_id=session_id
-        )
-        yield f"data: {done_chunk.model_dump_json()}\n\n"
-
-    except Exception as e:
-        # Send error
-        error_chunk = ChatStreamChunk(
-            type="error",
-            content=f"处理请求时出错: {str(e)}",
-            session_id=session_id
-        )
-        yield f"data: {error_chunk.model_dump_json()}\n\n"
+def trusted_upload(request: ChatRequest, db: Session, subject: str):
+    assert_claimed_user(request.user_id, subject)
+    if request.file_path:
+        raise safe_error(400, "file_id_required", "Send file_id from the upload response; server paths are not accepted")
+    if not request.file_id:
+        return None
+    record = resolve_upload(db, request.file_id, subject)
+    return {"file_id": record.id, "storage_name": record.storage_name,
+            "original_name": record.original_name, "user_id": subject}
 
 
 @router.post("/", response_model=ChatResponse)
 async def chat(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
 ) -> ChatResponse:
     """
     Unified chat endpoint with automatic agent routing
@@ -382,8 +371,8 @@ async def chat(
     - Maintains conversation history
     - Supports CSV/XLSX/XLS dataset ingestion
     """
-    # Get or create session
-    session_id = get_or_create_session(db, request.session_id, request.user_id)
+    upload = trusted_upload(request, db, subject)
+    session_id = get_or_create_session(db, request.session_id, subject)
     trace_id = request.trace_id or str(uuid.uuid4())
 
     # Save user message
@@ -407,8 +396,9 @@ async def chat(
         session_id,
         request.file_path,
         effective_incremental,
-        user_id=request.user_id,
+        user_id=subject,
         trace_id=trace_id,
+        uploaded_file=upload,
     )
 
     # Save assistant message
@@ -446,22 +436,24 @@ async def chat_legacy(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
 ) -> ChatResponse:
-    return await chat(request, background_tasks, db)
+    return await chat(request, background_tasks, db, subject)
 
 
 @router.post("/stream")
 async def chat_stream(
     request: ChatRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
 ) -> StreamingResponse:
     """
     Streaming chat endpoint with automatic agent routing
 
     Returns responses in Server-Sent Events (SSE) format
     """
-    # Get or create session
-    session_id = get_or_create_session(db, request.session_id, request.user_id)
+    upload = trusted_upload(request, db, subject)
+    session_id = get_or_create_session(db, request.session_id, subject)
     trace_id = request.trace_id or str(uuid.uuid4())
 
     # Save user message
@@ -479,15 +471,22 @@ async def chat_stream(
         else settings.INGEST_INCREMENTAL_DEFAULT
     )
 
-    # Return streaming response
+    async def persist_final(result):
+        with SessionLocal() as stream_db:
+            owned_session(stream_db, session_id, subject)
+            await save_message(stream_db, session_id, result["message"], is_user=False,
+                               route=result.get("route"), metadata=result.get("metadata"))
+
     return StreamingResponse(
         stream_agent_response(
             request.message,
             session_id,
             request.file_path,
             effective_incremental,
-            user_id=request.user_id,
+            user_id=subject,
             trace_id=trace_id,
+            uploaded_file=upload,
+            on_complete=persist_final,
         ),
         media_type="text/event-stream",
         headers={
@@ -502,19 +501,22 @@ async def chat_stream(
 async def chat_stream_legacy_post(
     request: ChatRequest,
     db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
 ) -> StreamingResponse:
-    return await chat_stream(request, db)
+    return await chat_stream(request, db, subject)
 
 
 @router.get("/chat/stream", include_in_schema=False)
 async def chat_stream_legacy_get(
     message: str = Query(..., min_length=1, max_length=5000),
     session_id: Optional[str] = Query(None),
-    user_id: Optional[str] = Query("default_user"),
+    user_id: Optional[str] = Query(None),
     file_path: Optional[str] = Query(None),
+    file_id: Optional[str] = Query(None),
     trace_id: Optional[str] = Query(None),
     ingest_incremental: Optional[bool] = Query(None),
     db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
 ) -> StreamingResponse:
     request = ChatRequest(
         message=message,
@@ -522,10 +524,11 @@ async def chat_stream_legacy_get(
         user_id=user_id,
         stream=True,
         file_path=file_path,
+        file_id=file_id,
         trace_id=trace_id,
         ingest_incremental=ingest_incremental,
     )
-    return await chat_stream(request, db)
+    return await chat_stream(request, db, subject)
 
 
 @router.get("/history/{session_id}", response_model=List[ChatMessageResponse])
@@ -533,13 +536,14 @@ async def get_chat_history(
     session_id: str,
     db: Session = Depends(get_db),
     limit: int = Query(50, le=100),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    subject: str = Depends(require_user),
 ) -> List[ChatMessageResponse]:
     """
     Get chat history for a session
     """
     # Verify session exists
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -560,12 +564,13 @@ async def get_chat_history(
 @router.delete("/session/{session_id}")
 async def clear_session(
     session_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    subject: str = Depends(require_user),
 ) -> Dict[str, str]:
     """
     Clear all messages in a session
     """
-    session = chat_session.get(db, id=session_id)
+    session = owned_session(db, session_id, subject)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -579,7 +584,7 @@ async def clear_session(
 
 
 @router.get("/routes")
-async def get_route_info() -> Dict[str, Any]:
+async def get_route_info(subject: str = Depends(require_user)) -> Dict[str, Any]:
     """
     Get information about available routes and their purposes
     """
@@ -598,7 +603,7 @@ async def get_route_info() -> Dict[str, Any]:
             "data-query": {
                 "name": "数据分析",
                 "description": "统一进入 Planner，并在 SQL Agent、Knowledge RAG、Graph Tool 之间选择",
-                "examples": ["按菜系统计菜谱数量", "宫保鸡丁的历史", "查询菜品和食材关系"]
+                "examples": ["按品类统计销售件数", "电子产品退货政策", "查询商品与供应商关系"]
             },
             "file-query": {
                 "name": "数据集导入",

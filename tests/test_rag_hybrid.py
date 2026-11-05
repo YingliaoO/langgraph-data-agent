@@ -96,7 +96,8 @@ def test_low_cosine_lexical_hit_requires_real_qualified_rerank_score(monkeypatch
         def __init__(self, *args, **kwargs): pass
         async def __aenter__(self): return self
         async def __aexit__(self, *args): return False
-        def post(self, url, json):
+        def post(self, url, json, headers):
+            assert "X-Knowledge-Service-Key" in headers
             Session.payload = json
             return Response()
     monkeypatch.setattr("multisource_data_agent.application.agents.tool_execution.knowledge_rag.aiohttp.ClientSession", Session)

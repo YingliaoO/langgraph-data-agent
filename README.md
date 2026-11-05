@@ -6,6 +6,8 @@
 
 [快速开始](#快速开始) · [真实演示](docs/SHOWCASE.md) · [架构设计](docs/ARCHITECTURE.md) · [评测方法](docs/EVALUATION.md) · [API](docs/API_CONTRACT.md)
 
+发布配置与当前验证范围见[安全整改记录](docs/SECURITY_RELEASE.md)。Chat/Session/Upload 需要短期 Bearer token；业务 SQL 使用独立只读账户。
+
 默认场景为 **Synthetic Enterprise Retail**：订单与销量放在 MySQL，政策与 SOP 放在 PGVector，商品关系放在 Neo4j。全部业务数据均为合成数据，用于展示异构数据访问与统一编排。
 
 ## 真实查询演示
@@ -62,15 +64,16 @@ python -m venv .venv
 python -m pip install -r requirements.txt
 python -m pip check
 Copy-Item .env.example .env
-# 编辑 .env，填写模型与数据库配置
+# 编辑 .env，填写模型、独立应用/业务数据库配置，并分别生成 AUTH_JWT_SECRET / KNOWLEDGE_SERVICE_TOKEN（至少 32 随机字节）
 docker compose up -d --build
 curl.exe http://localhost:8000/ready
 # 首次使用隔离的演示环境；该步骤会写入合成数据
+$env:MULTISOURCE_AGENT_ACCESS_TOKEN = python scripts/create_access_token.py --subject demo-operator
 python .\demo\enterprise_retail\bootstrap.py
 python -u .\demo\enterprise_retail\smoke.py
 ```
 
-Vue 控制台单独启动：
+Vue 控制台单独启动，打开后输入管理员离线签发的短期 Bearer token（仅保存在页面内存）：
 
 ```powershell
 cd web
@@ -106,7 +109,7 @@ python -m pytest -q
 
 ## 使用范围
 
-当前支持独立子任务并行与证据聚合；文件摄取返回后台提交确认，LangGraph checkpoint 使用进程内存。生产认证、租户权限及多实例恢复需额外实现。具体行为见[运行边界](docs/KNOWN_LIMITATIONS.md)。
+当前支持独立子任务并行与证据聚合；文件摄取返回后台提交确认，LangGraph checkpoint 使用进程内存。API 使用 JWT 身份与 Session owner 隔离，SQL 使用独立只读账户；完整 RBAC、业务数据租户权限及多实例恢复需额外实现。具体行为见[运行边界](docs/KNOWN_LIMITATIONS.md)。
 
 ## 代码入口与文档
 

@@ -129,7 +129,8 @@ def test_env_example_documents_only_core_stack() -> None:
     ):
         assert legacy not in source
     assert "BACKEND_INGEST_SERVICE_URL=http://kb_ingest:8000" in source
-    assert "DATABASE_URL=mysql+pymysql://retail_user:local_demo_only@mysql:3306/retail_demo" in source
+    assert "BUSINESS_DATABASE_URL=mysql+pymysql://retail_reader:local_business_demo_only@mysql:3306/retail_demo" in source
+    assert "APP_DATABASE_URL=mysql+pymysql://agent_app:local_app_demo_only@mysql:3306/agent_app" in source
 
 
 def test_debug_is_opt_in_and_legacy_sqlite_path_is_preserved(monkeypatch) -> None:
@@ -168,5 +169,5 @@ def test_production_override_removes_demo_exposure_and_requires_credentials() ->
     assert "*" not in neo["NEO4J_dbms_security_procedures_allowlist"]
     assert "*" not in neo["NEO4J_dbms_security_procedures_unrestricted"]
     assert "local_demo_only" not in template
-    for variable in ("PROD_DATABASE_URL", "PROD_MYSQL_PASSWORD", "PROD_MYSQL_ROOT_PASSWORD", "PROD_NEO4J_PASSWORD", "PROD_PG_PASSWORD"):
+    for variable in ("PROD_APP_DATABASE_URL", "PROD_BUSINESS_DATABASE_URL", "PROD_APP_DB_PASSWORD", "PROD_BUSINESS_DB_PASSWORD", "PROD_MYSQL_PASSWORD", "PROD_MYSQL_ROOT_PASSWORD", "PROD_NEO4J_PASSWORD", "PROD_PG_PASSWORD"):
         assert "${" + variable + ":?" in template

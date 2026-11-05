@@ -15,11 +15,15 @@ services:
       # 基础配置
       - DEBUG=${MULTISOURCE_AGENT_DEBUG:-False}
       # 数据库配置
-      - DATABASE_URL=${DATABASE_URL}
-      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-local_demo_root_only}
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-retail_demo}
-      - MYSQL_USER=${MYSQL_USER:-retail_user}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-local_demo_only}
+      - APP_DATABASE_URL=${APP_DATABASE_URL}
+      - BUSINESS_DATABASE_URL=${BUSINESS_DATABASE_URL}
+      - BUSINESS_ALLOWED_SCHEMAS=${BUSINESS_ALLOWED_SCHEMAS:-retail_demo}
+      - BUSINESS_ALLOWED_TABLES=${BUSINESS_ALLOWED_TABLES:-retail_customers,retail_products,retail_orders,retail_order_items,retail_refunds}
+      - AUTH_JWT_SECRET=${AUTH_JWT_SECRET}
+      - AUTH_JWT_ISSUER=${AUTH_JWT_ISSUER:-multisource-data-agent}
+      - AUTH_JWT_AUDIENCE=${AUTH_JWT_AUDIENCE:-multisource-data-agent-api}
+      - KNOWLEDGE_SERVICE_TOKEN=${KNOWLEDGE_SERVICE_TOKEN}
+
 
       # Neo4j配置
       - NEO4J_URI=bolt://neo4j:7687
@@ -87,7 +91,6 @@ services:
       - ./multisource_data_agent:/app/multisource_data_agent
       - ./data:/app/data
       - ./uploads:/app/uploads
-      - ./.env:/app/.env
     depends_on:
       - neo4j
       - mysql
@@ -132,8 +135,15 @@ services:
       - MYSQL_DATABASE=${MYSQL_DATABASE:-retail_demo}
       - MYSQL_USER=${MYSQL_USER:-retail_user}
       - MYSQL_PASSWORD=${MYSQL_PASSWORD:-local_demo_only}
+      - APP_DB_NAME=${APP_DB_NAME:-agent_app}
+      - APP_DB_USER=${APP_DB_USER:-agent_app}
+      - APP_DB_PASSWORD=${APP_DB_PASSWORD:-local_app_demo_only}
+      - BUSINESS_DB_USER=${BUSINESS_DB_USER:-retail_reader}
+      - BUSINESS_DB_PASSWORD=${BUSINESS_DB_PASSWORD:-local_business_demo_only}
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./demo/enterprise_retail/mysql_seed.sql:/docker-entrypoint-initdb.d/01-retail.sql:ro
+      - ./scripts/init_mysql_roles.sh:/docker-entrypoint-initdb.d/02-roles.sh:ro
     command: --default-authentication-plugin=mysql_native_password
     networks:
       - multisource-agent-network
@@ -164,9 +174,9 @@ services:
     dns:
       - 8.8.8.8
       - 8.8.4.4
-    env_file:
-      - .env
     environment:
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN}
+      FILE_UPLOAD_MAX_MB: ${FILE_UPLOAD_MAX_MB:-2}
       # PostgreSQL配置
       PGHOST: ${KB_PGHOST:-kb_postgres}
       PGPORT: ${KB_PGPORT:-5432}
