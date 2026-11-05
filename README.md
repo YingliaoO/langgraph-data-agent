@@ -26,21 +26,30 @@
 
 ## 系统架构
 
-``` mermaid
+```mermaid
 flowchart TB
     U[用户] --> UI[Vue 3 Console]
     UI --> API[FastAPI API Boundary]
-    API --> AUTH[JWT 身份验证与 Owner 校验]
-    AUTH --> ROUTER[Semantic Router]
+    API --> AUTH[JWT Authentication + Owner Check]
 
-    ROUTER -->|general-query| GENERAL[普通回答]
-    ROUTER -->|additional-query| CLARIFY[补充信息 / 澄清]
-    ROUTER -->|file-query| INGEST[受控文件摄取]
-    ROUTER -->|data-query| PLANNER[Generic Planner]
+    subgraph Agent["LangGraph Runtime"]
+        ROUTER[Semantic Router]
+        GENERAL[普通回答]
+        CLARIFY[补充信息 / 澄清]
+        INGEST[受控文件摄取]
+        PLANNER[Generic Planner]
+        TASKS[结构化 Tasks]
+        SELECTOR[Tool Selection]
+        EXECUTOR[Unified Tool Executor]
 
-    PLANNER --> TASKS[结构化 Tasks]
-    TASKS --> SELECTOR[Tool Selection]
-    SELECTOR --> EXECUTOR[Unified Tool Executor]
+        ROUTER -->|general-query| GENERAL
+        ROUTER -->|additional-query| CLARIFY
+        ROUTER -->|file-query| INGEST
+        ROUTER -->|data-query| PLANNER
+        PLANNER --> TASKS --> SELECTOR --> EXECUTOR
+    end
+
+    AUTH --> ROUTER
 
     EXECUTOR --> SQL[sql_agent]
     EXECUTOR --> RAG[knowledge_rag]
@@ -54,6 +63,7 @@ flowchart TB
     SQL --> RESULT[ToolResult]
     RAG --> RESULT
     GRAPH --> RESULT
+
     RESULT --> EVIDENCE[Evidence / EvidenceContext]
     EVIDENCE --> ANSWER[Shared AnswerGenerator]
     ANSWER --> DTO[Versioned Execution DTO]

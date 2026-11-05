@@ -62,7 +62,7 @@ curl.exe -s http://localhost:8000/ready
 
 若同时修改了依赖或 Dockerfile，先运行 `docker compose build backend`。上述操作保留 MySQL、Neo4j 和 PGVector 的现有数据卷，不需要执行 `down -v`、重新导入数据或重置数据库密码。不要把包含凭据的完整 `docker compose config` 输出贴到公开日志中。
 
-RAG 接受阈值更新：当前 PGVector 的默认 `KB_POSTGRES_RERANK_THRESHOLD=0.75`，依据[独立开发组校准](RAG_EVALUATION.md#接受阈值校准与误拒答回归)。沿用旧 `.env` 中 `0.8` 的用户需显式改为 `0.75`，再按上面命令重建 backend 容器；只拉取源码或 restart 不会覆盖旧环境值。cosine 门槛仍为 `KB_POSTGRES_SIMILARITY_THRESHOLD=0.5`。旧 `KB_RERANK_SCORE_THRESHOLD` 不控制 canonical PGVector 的这一门槛；不要将两者混淆或按单题结果随意调低。
+RAG 接受阈值更新：当前 PGVector 的默认 `KB_POSTGRES_RERANK_THRESHOLD=0.75`，依据[独立开发组校准](RAG_EVALUATION.md#接受门槛与回答)。沿用旧 `.env` 中 `0.8` 的用户需显式改为 `0.75`，再按上面命令重建 backend 容器；只拉取源码或 restart 不会覆盖旧环境值。cosine 门槛仍为 `KB_POSTGRES_SIMILARITY_THRESHOLD=0.5`。旧 `KB_RERANK_SCORE_THRESHOLD` 不控制 canonical PGVector 的这一门槛；不要将两者混淆或按单题结果随意调低。
 
 ## 4. 启动核心服务
 

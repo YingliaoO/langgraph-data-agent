@@ -27,7 +27,7 @@ Request
 
 ## 2. 系统总览
 
-``` mermaid
+```mermaid
 flowchart TB
     subgraph Client["Client"]
         USER[User]
@@ -112,38 +112,45 @@ Router 判断产品处理路线，而不是直接选择底层数据库：
 
 ### 3.2 Data-query 执行时序
 
-``` mermaid
+```mermaid
 sequenceDiagram
     autonumber
     participant U as User / Vue
     participant API as FastAPI
-    participant R as Router
-    participant P as Planner
+    participant G as LangGraph Runtime
+    participant R as Semantic Router
+    participant P as Generic Planner
     participant S as Tool Selection
-    participant X as Unified Executor
-    participant T as SQL / RAG / Graph
-    participant D as Data Source
+    participant X as Unified Tool Executor
+    participant T as SQL / RAG / Graph Tools
+    participant D as Data Sources
     participant E as Evidence / Answer
 
     U->>API: POST /chat + Bearer token
     API->>API: Verify JWT subject and ownership
-    API->>R: User request
-    R-->>API: data-query
-    API->>P: Plan request
-    P-->>API: Structured tasks
+    API->>G: graph.ainvoke(input_state)
+
+    G->>R: Classify product route
+    R-->>G: data-query
+    G->>P: Create structured plan
+    P-->>G: Structured tasks
+
     loop Each independent task
-        API->>S: Select canonical tool
-        S-->>API: sql_agent / knowledge_rag / graph_tool
-        API->>X: execute(tool, task, context)
+        G->>S: Select canonical tool
+        S-->>G: sql_agent / knowledge_rag / graph_tool
+        G->>X: execute(tool, task, context)
         X->>T: Unified execute contract
         T->>D: Query / retrieve
         D-->>T: Rows / documents / graph records
         T-->>X: ToolResult
-        X-->>API: ToolResult + trace
+        X-->>G: ToolResult + trace
     end
-    API->>E: Normalize Evidence and build context
-    E-->>API: Answer + citation IDs
-    API->>API: Persist final assistant message
+
+    G->>E: Normalize Evidence and build context
+    E-->>G: Answer + citation IDs
+    G-->>API: Agent result + trace
+
+    API->>API: Build Execution DTO and persist final message
     API-->>U: Answer + bounded Execution DTO
 ```
 
@@ -336,28 +343,42 @@ HTTP 不直接暴露完整 LangGraph State。`execution_contract.py` 将内部�
 
 ## 9. 安全边界
 
-``` mermaid
+```mermaid
 flowchart LR
     CLIENT[Vue Client]
-    TOKEN[Short-lived JWT]
     API[FastAPI Auth + Owner Check]
-    APPDB[(APP_DATABASE_URL\nSessions / History / Upload Metadata)]
-    SQL[sql_agent]
-    BIZDB[(BUSINESS_DATABASE_URL\nDedicated Read-only Account)]
-    ALLOW[Schema + Table Allowlist]
-    RAG[knowledge_rag]
-    SVC[kb_ingest\nInternal Service Token]
-    PG[(PGVector)]
+    APPDB[(APP_DATABASE_URL)]
     FILE[file_id + Owner-bound Metadata]
 
-    CLIENT -->|Bearer| API
-    TOKEN --> API
+    subgraph Agent["LangGraph Agent Runtime"]
+        ORCH[Router / Planner / Tool Selection]
+        EXEC[Unified Tool Executor]
+        ORCH --> EXEC
+    end
+
+    SQL[sql_agent]
+    ALLOW[Schema + Table Allowlist]
+    BIZDB[(BUSINESS_DATABASE_URL - Read Only)]
+
+    RAG[knowledge_rag]
+    SVC[kb_ingest - Internal Service Token]
+    PG[(PostgreSQL + PGVector)]
+
+    GRAPH[graph_tool]
+    NEO[(Neo4j)]
+
+    CLIENT -->|Bearer JWT| API
     API --> APPDB
     API --> FILE
-    API --> SQL
+    API --> ORCH
+
+    EXEC --> SQL
+    EXEC --> RAG
+    EXEC --> GRAPH
+
     SQL --> ALLOW --> BIZDB
-    API --> RAG
     RAG -->|Internal token| SVC --> PG
+    GRAPH --> NEO
 ```
 
 | 边界      | 当前实现                                                       |
